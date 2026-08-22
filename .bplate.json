@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0.0",
+  "bplate_version": "0.1.0",
+  "project_name": "/home/carnyx/repos/snuze",
+  "profile_slug": "rust-cli",
+  "profile_version": "1.0.0",
+  "profile_hash": "e29110727bbb6b5aa7f5b64c7d4489110d6e10c21046580f8283f3f78d1ad627",
+  "applied_traits": [
+    "mise",
+    "agent-core",
+    "editor-baseline",
+    "github-ci"
+  ],
+  "trait_hashes": {
+    "mise": "2509fcb57db2a6d34e17ea59604c24836acb07e0834df03b0b2b65a3b5d6b11b",
+    "editor-baseline": "44a3a5c802d8719c497a2ff03e6dcf870570458f19ec1887fe2d99687e1e5e30",
+    "agent-core": "ca2d7f8d375ccc6d78db1d44ce167e2a7534aa82e0cbf973be57e6dd27c13e4d",
+    "github-ci": "ee048ddbded64ab2520d0005b397103464250b6834e9599d6ec2857f9c3b9833"
+  },
+  "license": "GPL-3.0",
+  "author": "Daniel Ramirez <dan@lufs.org>",
+  "timestamp": "2026-08-22T07:01:40.577760592+00:00",
+  "file_hashes": {
+    "AGENTS.md": "8c8c761c16d38eb2048ddc71d51dc6d286468b6343d11908b1f5025fba742938",
+    ".bplate-hooks/pre-push": "857f6c08b013954025bdd41259b591129d82656078d384e44bcee26522f2ab14",
+    ".gitattributes": "8ac00d2e9e08723fcddf47ff35792a8ae72fde12d3f6023101140337298afbda",
+    ".mise.toml": "0df472b163687499269a8d9006eae343fe910b948f5f81fef74bd224993fc031",
+    ".github/workflows/ci.yml": "30f2538e5a1a14975a1903e179ee7a5ce5c806e20f7a19cf0c59bec253fa144a",
+    ".agents/skills/home-carnyx-repos-snuze/SKILL.md": "c2015bf054c75d652d36fc5fb8013b1b3161797db22e205d890a61dd2f6572fe",
+    "Cargo.toml": "5ed697e26f785dfdccb7e0cff987411f2f7d064825c05b007e67e819b7657ee9",
+    ".editorconfig": "ad5e3d325e6eb1766cd4a3c127afdde06df39418b2a539adcecfc7c7bb513147",
+    "README.md": "105ca03a128f494d9d382cb0e633288a7d7d53ee1f6117976f11980108e661f1",
+    "LICENSE": "10a216e0c0b703fd84099a8a6b8a4c740ce6f40b24d16f9f14e6fe0af75d3b55",
+    "tests/smoke_test.rs": "c02c9b91b67dc670eecbe8e664b04e091e9ee403beba9229ecbe1a93988c7c98",
+    "src/main.rs": "a1a4bbae6d3c170ff6060bacc3b0f058b3455b3ae4ba6d62c10b8bcb4eb028a9"
+  },
+  "short_cli_name": null
+}
