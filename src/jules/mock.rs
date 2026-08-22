@@ -1,5 +1,5 @@
 use crate::kernel::{JulesSessionState, SnuzeError};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Trait defining the contract for checking Jules session states.
 pub trait JulesAdapter: Send + Sync {
@@ -13,10 +13,16 @@ pub trait JulesAdapter: Send + Sync {
     ) -> Result<Vec<JulesSessionState>, SnuzeError>;
 }
 
-/// Test double recording every call it receives.
-pub struct MockJulesAdapter {
+/// Inner state shared (and cloned) across `MockJulesAdapter` instances.
+struct MockInner {
     response: Mutex<Result<Vec<JulesSessionState>, String>>,
     calls: Mutex<Vec<Vec<String>>>,
+}
+
+/// Test double recording every call it receives.
+#[derive(Clone)]
+pub struct MockJulesAdapter {
+    inner: Arc<MockInner>,
 }
 
 impl MockJulesAdapter {
@@ -24,14 +30,16 @@ impl MockJulesAdapter {
     #[must_use]
     pub fn new(initial_response: Vec<JulesSessionState>) -> Self {
         Self {
-            response: Mutex::new(Ok(initial_response)),
-            calls: Mutex::new(Vec::new()),
+            inner: Arc::new(MockInner {
+                response: Mutex::new(Ok(initial_response)),
+                calls: Mutex::new(Vec::new()),
+            }),
         }
     }
 
     /// Replace the response returned by subsequent calls without touching call history.
     pub fn set_response(&self, response: Vec<JulesSessionState>) {
-        let mut guard = match self.response.lock() {
+        let mut guard = match self.inner.response.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
@@ -40,7 +48,7 @@ impl MockJulesAdapter {
 
     /// Make subsequent calls fail with `SnuzeError::DaemonUnavailable(reason)`.
     pub fn set_failure(&self, reason: &str) {
-        let mut guard = match self.response.lock() {
+        let mut guard = match self.inner.response.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
@@ -50,7 +58,7 @@ impl MockJulesAdapter {
     /// Number of times `check_sessions` has been called so far.
     #[must_use]
     pub fn call_count(&self) -> usize {
-        let guard = match self.calls.lock() {
+        let guard = match self.inner.calls.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
@@ -60,7 +68,7 @@ impl MockJulesAdapter {
     /// The session ID list passed on the Nth call (0-indexed), if it happened.
     #[must_use]
     pub fn call_args(&self, n: usize) -> Option<Vec<String>> {
-        let guard = match self.calls.lock() {
+        let guard = match self.inner.calls.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
@@ -80,13 +88,13 @@ impl JulesAdapter for MockJulesAdapter {
         session_ids: &[String],
     ) -> Result<Vec<JulesSessionState>, SnuzeError> {
         {
-            let mut guard = match self.calls.lock() {
+            let mut guard = match self.inner.calls.lock() {
                 Ok(g) => g,
                 Err(e) => e.into_inner(),
             };
             guard.push(session_ids.to_vec());
         }
-        let guard = match self.response.lock() {
+        let guard = match self.inner.response.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
