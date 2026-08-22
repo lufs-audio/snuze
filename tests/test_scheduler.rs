@@ -3,13 +3,13 @@
 #![allow(clippy::indexing_slicing)]
 #![allow(clippy::panic)]
 
-
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
+use snuze::jules::MockJulesAdapter;
 use snuze::kernel::{Alarm, AlarmStatus, DeliveryMode, Trigger};
 use snuze::scheduler::{
     DeliveryOutcome, FakeClock, FiredEvent, HerdrAdapter, Scheduler,
@@ -81,8 +81,10 @@ fn setup_test_scheduler(
     grace_window: Duration,
 ) -> (Arc<Scheduler>, Receiver<FiredEvent>) {
     let (tx, rx): (Sender<FiredEvent>, Receiver<FiredEvent>) = channel();
+    let jules_adapter = Box::new(MockJulesAdapter::new(vec![]));
     let scheduler = Arc::new(Scheduler::new(
         Box::new(adapter),
+        jules_adapter,
         Box::new(clock),
         grace_window,
         Box::new(move |event| {

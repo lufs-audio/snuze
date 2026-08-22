@@ -1,11 +1,22 @@
-use super::JulesAdapter;
 use crate::kernel::{JulesSessionState, SnuzeError};
 use std::sync::Mutex;
 
+/// Trait defining the contract for checking Jules session states.
+pub trait JulesAdapter: Send + Sync {
+    /// Query current state for each listed session ID in one batch call.
+    ///
+    /// # Errors
+    /// Returns `SnuzeError::DaemonUnavailable` or `SnuzeError::JulesCredentialMissing` on failure.
+    fn check_sessions(
+        &self,
+        session_ids: &[String],
+    ) -> Result<Vec<JulesSessionState>, SnuzeError>;
+}
+
 /// Test double recording every call it receives.
 pub struct MockJulesAdapter {
-    response: Mutex<Result<Vec<JulesSessionState>, String>>, // String stand-in for a cloneable error reason
-    calls: Mutex<Vec<Vec<String>>>, // one entry per call, the session_ids it was asked about
+    response: Mutex<Result<Vec<JulesSessionState>, String>>,
+    calls: Mutex<Vec<Vec<String>>>,
 }
 
 impl MockJulesAdapter {
@@ -64,7 +75,10 @@ impl Default for MockJulesAdapter {
 }
 
 impl JulesAdapter for MockJulesAdapter {
-    fn check_sessions(&self, session_ids: &[String]) -> Result<Vec<JulesSessionState>, SnuzeError> {
+    fn check_sessions(
+        &self,
+        session_ids: &[String],
+    ) -> Result<Vec<JulesSessionState>, SnuzeError> {
         {
             let mut guard = match self.calls.lock() {
                 Ok(g) => g,

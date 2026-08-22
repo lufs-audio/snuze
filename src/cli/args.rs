@@ -27,11 +27,27 @@ pub enum Command {
     Doctor(DoctorArgs),
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct SetArgs {
-    /// Duration string (e.g. 30s, 15m, 1h, 90m, 1h30m)
+    /// Duration string (e.g. 30s, 15m, 1h, 90m, 1h30m). Mutually exclusive with --jules.
     #[arg(long)]
-    pub after: String,
+    pub after: Option<String>,
+
+    /// Comma-separated Jules session IDs. Mutually exclusive with --after.
+    #[arg(long)]
+    pub jules: Option<String>,
+
+    /// Condition to trigger Jules alarm (all-terminal, any-terminal, any-completed). Required with --jules.
+    #[arg(long)]
+    pub condition: Option<String>,
+
+    /// Timeout duration for Jules session condition check. Required with --jules.
+    #[arg(long)]
+    pub timeout: Option<String>,
+
+    /// Polling interval for Jules condition checks (defaults to 30s).
+    #[arg(long)]
+    pub poll_interval: Option<String>,
 
     /// Herdr target pane ID (e.g. w1:p3)
     #[arg(long)]
@@ -41,7 +57,7 @@ pub struct SetArgs {
     #[arg(long)]
     pub prompt: Option<String>,
 
-    /// Command delivery payload to execute in target pane
+    /// Command delivery payload to execute in target pane (not supported with --jules)
     #[arg(long)]
     pub command: Option<String>,
 

@@ -98,3 +98,43 @@ pub fn parse_duration(s: &str) -> Result<Duration, SnuzeError> {
 
     Ok(Duration::from_secs(total_secs))
 }
+
+/// Formats a `Duration` into a human-readable string (e.g. `30s`, `15m`, `1h30m`, `12m34s`).
+#[must_use]
+pub fn format_duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs == 0 {
+        return "0s".to_string();
+    }
+
+    let mut parts = String::new();
+    let mut remaining = secs;
+
+    let days = remaining / 86400;
+    if days > 0 {
+        use std::fmt::Write;
+        let _ = write!(parts, "{days}d");
+        remaining %= 86400;
+    }
+
+    let hours = remaining / 3600;
+    if hours > 0 {
+        use std::fmt::Write;
+        let _ = write!(parts, "{hours}h");
+        remaining %= 3600;
+    }
+
+    let mins = remaining / 60;
+    if mins > 0 {
+        use std::fmt::Write;
+        let _ = write!(parts, "{mins}m");
+        remaining %= 60;
+    }
+
+    if remaining > 0 || parts.is_empty() {
+        use std::fmt::Write;
+        let _ = write!(parts, "{remaining}s");
+    }
+
+    parts
+}
