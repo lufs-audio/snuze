@@ -12,7 +12,7 @@
 #![allow(clippy::panic)]
 
 use snuze::snuze_herdr::RealHerdrAdapter;
-use snuze::snuze_kernel::{Alarm, AlarmStatus, DeliveryMode, SnuzeError};
+use snuze::snuze_kernel::{Alarm, AlarmStatus, DeliveryMode, SnuzeError, Trigger};
 use snuze::snuze_scheduler::{DeliveryOutcome, HerdrAdapter};
 use std::env;
 use std::path::PathBuf;
@@ -48,6 +48,8 @@ fn sample_alarm(delivery: DeliveryMode) -> Alarm {
         status: AlarmStatus::Pending,
         fired_at: None,
         failure_reason: None,
+        trigger: Trigger::Deadline,
+        schema_version: 1,
     }
 }
 
