@@ -126,18 +126,7 @@ impl HerdrAdapter for RealHerdrAdapter {
 
         let is_prompt = match &alarm.delivery {
             DeliveryMode::Prompt { text } => {
-                let timeout_str = self.call_timeout.as_millis().to_string();
-                cmd.args([
-                    "agent",
-                    "prompt",
-                    &alarm.pane_id,
-                    text,
-                    "--wait",
-                    "--until",
-                    "working",
-                    "--timeout",
-                    &timeout_str,
-                ]);
+                cmd.args(["agent", "prompt", &alarm.pane_id, text]);
                 true
             }
             DeliveryMode::Command { text } => {
