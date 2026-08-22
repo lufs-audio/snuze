@@ -133,6 +133,8 @@ impl HerdrAdapter for RealHerdrAdapter {
                     &alarm.pane_id,
                     text,
                     "--wait",
+                    "--until",
+                    "working",
                     "--timeout",
                     &timeout_str,
                 ]);
@@ -144,7 +146,9 @@ impl HerdrAdapter for RealHerdrAdapter {
             }
         };
 
-        let output = match run_command_with_timeout(cmd, self.call_timeout) {
+        // Give subprocess run a small grace buffer so herdr can return its own structured JSON errors
+        let subprocess_timeout = self.call_timeout + Duration::from_secs(2);
+        let output = match run_command_with_timeout(cmd, subprocess_timeout) {
             Ok(out) => out,
             Err(SubprocessError::Timeout) => {
                 return DeliveryOutcome::HerdrUnavailable("timeout".to_string());
