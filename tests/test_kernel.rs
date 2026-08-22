@@ -1,7 +1,5 @@
+use snuze::kernel::{parse_duration, Alarm, AlarmStatus, DeliveryMode, ExitCode, SnuzeError};
 use std::time::{Duration, UNIX_EPOCH};
-use snuze::kernel::{
-    parse_duration, Alarm, AlarmStatus, DeliveryMode, ExitCode, SnuzeError,
-};
 
 #[test]
 fn test_parse_duration_valid() -> Result<(), Box<dyn std::error::Error>> {
@@ -11,14 +9,8 @@ fn test_parse_duration_valid() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(parse_duration("1h")?, Duration::from_hours(1));
     assert_eq!(parse_duration("90m")?, Duration::from_mins(90));
     assert_eq!(parse_duration("1d")?, Duration::from_hours(24));
-    assert_eq!(
-        parse_duration("1h30m")?,
-        Duration::from_mins(90)
-    );
-    assert_eq!(
-        parse_duration("1h30m15s")?,
-        Duration::from_secs(5415)
-    );
+    assert_eq!(parse_duration("1h30m")?, Duration::from_mins(90));
+    assert_eq!(parse_duration("1h30m15s")?, Duration::from_secs(5415));
     assert_eq!(
         parse_duration("2d12h30m5s")?,
         Duration::from_secs(2 * 86400 + 12 * 3600 + 30 * 60 + 5)
@@ -87,10 +79,7 @@ fn test_snuze_error_to_exit_code_mapping() {
             SnuzeError::AlarmNotFound("01HGWY37VZ8Q9998".to_string()),
             ExitCode::TargetUnavailable,
         ),
-        (
-            SnuzeError::HerdrBinaryMissing,
-            ExitCode::BinaryMissing,
-        ),
+        (SnuzeError::HerdrBinaryMissing, ExitCode::BinaryMissing),
         (
             SnuzeError::PersistFailed("disk write error".to_string()),
             ExitCode::ContractViolated,
@@ -182,7 +171,9 @@ fn test_alarm_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         Some("w1:p3")
     );
     assert_eq!(
-        parsed.get("created_by_pane").and_then(serde_json::Value::as_str),
+        parsed
+            .get("created_by_pane")
+            .and_then(serde_json::Value::as_str),
         Some("w1:p1")
     );
     assert_eq!(

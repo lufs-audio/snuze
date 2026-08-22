@@ -190,7 +190,10 @@ fn test_delete_removes_file_and_errors_on_missing() {
     assert!(store.get("to_delete").is_ok());
     store.delete("to_delete").unwrap();
 
-    assert!(matches!(store.get("to_delete"), Err(SnuzeError::AlarmNotFound(_))));
+    assert!(matches!(
+        store.get("to_delete"),
+        Err(SnuzeError::AlarmNotFound(_))
+    ));
 
     // Second delete should error with AlarmNotFound
     let err = store.delete("to_delete");
@@ -202,7 +205,10 @@ fn test_resolve_state_dir_xdg_precedence() {
     // When XDG_STATE_HOME is set
     std::env::set_var("XDG_STATE_HOME", "/tmp/custom_state");
     let state_dir = resolve_state_dir();
-    assert_eq!(state_dir, std::path::PathBuf::from("/tmp/custom_state/snuze"));
+    assert_eq!(
+        state_dir,
+        std::path::PathBuf::from("/tmp/custom_state/snuze")
+    );
 
     // When XDG_STATE_HOME is empty string
     std::env::set_var("XDG_STATE_HOME", "");

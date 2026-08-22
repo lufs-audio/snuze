@@ -41,7 +41,9 @@ impl From<&SnuzeError> for ExitCode {
     fn from(e: &SnuzeError) -> Self {
         match e {
             SnuzeError::InvalidDuration(_) | SnuzeError::ConflictingFlags(_) => ExitCode::Usage,
-            SnuzeError::PaneNotFound(_) | SnuzeError::AlarmNotFound(_) => ExitCode::TargetUnavailable,
+            SnuzeError::PaneNotFound(_) | SnuzeError::AlarmNotFound(_) => {
+                ExitCode::TargetUnavailable
+            }
             SnuzeError::HerdrBinaryMissing => ExitCode::BinaryMissing,
             SnuzeError::PersistFailed(_) => ExitCode::ContractViolated,
             SnuzeError::DaemonUnavailable(_) => ExitCode::DaemonUnavailable,
