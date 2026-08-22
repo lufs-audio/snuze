@@ -22,7 +22,10 @@ pub fn resolve_state_dir() -> PathBuf {
     if let Ok(home) = env::var("HOME") {
         let trimmed = home.trim();
         if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join(".local").join("state").join("snuze");
+            return PathBuf::from(trimmed)
+                .join(".local")
+                .join("state")
+                .join("snuze");
         }
     }
 

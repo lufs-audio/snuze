@@ -37,31 +37,37 @@ impl AlarmStore {
     /// Returns `SnuzeError::PersistFailed` on any I/O or serialization error.
     pub fn put(&self, alarm: &Alarm) -> Result<(), SnuzeError> {
         let target_path = self.alarms_dir.join(format!("{}.json", alarm.id));
-        let temp_path = self.alarms_dir.join(format!(".{}.tmp.{}", alarm.id, std::process::id()));
+        let temp_path = self
+            .alarms_dir
+            .join(format!(".{}.tmp.{}", alarm.id, std::process::id()));
 
-        let json_data = serde_json::to_string_pretty(alarm).map_err(|e| {
-            SnuzeError::PersistFailed(format!("failed to serialize alarm: {e}"))
-        })?;
+        let json_data = serde_json::to_string_pretty(alarm)
+            .map_err(|e| SnuzeError::PersistFailed(format!("failed to serialize alarm: {e}")))?;
 
-        let mut file = fs::File::create(&temp_path).map_err(|e| {
-            SnuzeError::PersistFailed(format!("failed to create temp file: {e}"))
-        })?;
+        let mut file = fs::File::create(&temp_path)
+            .map_err(|e| SnuzeError::PersistFailed(format!("failed to create temp file: {e}")))?;
 
         if let Err(e) = file.write_all(json_data.as_bytes()) {
             let _ = fs::remove_file(&temp_path);
-            return Err(SnuzeError::PersistFailed(format!("failed to write temp file: {e}")));
+            return Err(SnuzeError::PersistFailed(format!(
+                "failed to write temp file: {e}"
+            )));
         }
 
         if let Err(e) = file.sync_all() {
             let _ = fs::remove_file(&temp_path);
-            return Err(SnuzeError::PersistFailed(format!("failed to sync temp file: {e}")));
+            return Err(SnuzeError::PersistFailed(format!(
+                "failed to sync temp file: {e}"
+            )));
         }
 
         drop(file);
 
         if let Err(e) = fs::rename(&temp_path, &target_path) {
             let _ = fs::remove_file(&temp_path);
-            return Err(SnuzeError::PersistFailed(format!("failed to rename temp file to target file: {e}")));
+            return Err(SnuzeError::PersistFailed(format!(
+                "failed to rename temp file to target file: {e}"
+            )));
         }
 
         if let Ok(dir) = fs::File::open(&self.alarms_dir) {
