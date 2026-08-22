@@ -286,3 +286,149 @@ What cannot be verified in CI: actually injecting a prompt into a *live* Herdr p
 - [ ] `snuze doctor --json` accurately reports herdr/daemon/store health.
 - [ ] `TESTING.md` written for the one thing CI cannot cover: live Herdr pane delivery.
 - [ ] This SPEC's two flagged deviations (exit code count, min-heap vs. timer wheel) either ratified or explicitly overridden by Daniel before Phase 2 scaffolding begins.
+
+---
+
+## 11. Condition-Driven Wake-Up Mode (Jules Polling) — v2 Feature
+
+**Status:** Ready for Review — Phase 1 spec for `feature/jules-condition-mode`.
+**Built against:** `main` at the point Units 01–06 landed, plus two already-merged-to-branch fixes (`6fdb422`, `a9c31502`) that removed `--wait` from prompt delivery — see §11.7.
+
+### 11.0 Problem
+
+`--after DURATION` is a blind guess. For a fixed local task you can estimate well; for a Google Jules cloud session you can't — sessions in practice range from under a minute (docs sweeps) to many minutes (real feature units), so a fixed alarm is either too early (agent wakes, polls, finds nothing, has to reschedule — the exact toil `snuze` exists to remove) or too late (the agent sits idle after Jules already finished). `snuze` should be able to poll Jules on the caller's behalf and fire the instant the real condition is true, with a hard ceiling so it never polls forever.
+
+### 11.1 Architecture: generalize `Trigger`, not the whole alarm model
+
+`Alarm` gets one new field, not a parallel data structure:
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", default)]
+pub enum Trigger {
+    Deadline,
+    JulesCondition {
+        session_ids: Vec<String>,
+        condition: JulesCondition,
+        poll_interval_secs: u64,
+        timeout_at: SystemTime,
+        last_known: Vec<JulesSessionState>,
+    },
+}
+
+impl Default for Trigger {
+    fn default() -> Self { Trigger::Deadline }
+}
+```
+
+`Alarm.deadline: SystemTime` (existing field, unchanged type) is repurposed in meaning rather than renamed, to avoid unnecessary churn across six already-shipped, tested units: for `Trigger::Deadline` it is (as today) the exact fire time; for `Trigger::JulesCondition` it becomes **"the next time the scheduler should check this alarm"**, recomputed after every poll and capped at `timeout_at`. Document this dual meaning directly on the field, not just here.
+
+`Alarm` also gains `#[serde(default)] pub schema_version: u32` (default `1`). Every field added by this feature is `#[serde(default)]`, so an on-disk alarm record written by the currently-shipped binary deserializes unchanged with `trigger: Trigger::Deadline, schema_version: 1` — zero migration, purely additive. New records this feature writes set `schema_version: 2`. This is the first time `Alarm`'s on-disk shape has changed since it shipped; start the versioning discipline now rather than after it's already painful, matching this house's general "bump schema_version when extending a schema" rule.
+
+**Why generalize `Trigger` instead of a second parallel primitive:** `list`/`status`/`cancel`, the store, the daemon's IPC protocol, and the JSON envelope are already generic over `Alarm` — none of them need to change to support this feature. The only genuinely new work is (a) what "is it time to act on this alarm" means for the new kind, and (b) how to actually check external state. Keeping one `Alarm` type means a mixed `snuze list` (some deadline alarms, some condition alarms) already works for free.
+
+**Scheduler integration — the actual mechanism (Unit 10 owns this):** the min-heap stays a single, unified priority queue ordered by `deadline`/next-check-time, for *both* trigger kinds. When `Scheduler::run()` pops an alarm whose `Trigger` is `JulesCondition`, instead of unconditionally firing it:
+1. Call `JulesAdapter::check_sessions(&session_ids)`.
+2. If `condition.is_satisfied(&states)` → interpolate the template (§11.3) and `deliver()` through the existing `HerdrAdapter`, exactly like a deadline alarm.
+3. Else if `now >= timeout_at` → terminal `Failed("timeout")`. Not `Missed` — `Missed` is specifically for "deadline passed while nobody was listening"; a condition that never resolved is a genuine, expected `timeout`, semantically distinct.
+4. Else → persist updated `last_known` (so `snuze status` shows live progress on a pending poll, not just "pending"), set `deadline = min(now + poll_interval, timeout_at)`, re-push onto the same heap.
+
+No second thread, no second wait mechanism, no parallel poll-loop subsystem — this is a genuine generalization of the existing scheduler, not a bolt-on. If the daemon restarts mid-poll, boot-time re-arm (§3.5 existing behavior) applies unchanged: a `JulesCondition` alarm whose `timeout_at` already passed while the daemon was down resolves immediately to `Failed("timeout")` on re-arm; one whose `timeout_at` hasn't passed yet is re-armed and polls again immediately (not after a full fresh interval) so a restart doesn't cost the caller a full `poll_interval` of extra latency.
+
+### 11.2 CLI surface and condition semantics
+
+```text
+snuze set --jules SESSION_ID[,SESSION_ID2,...] --condition all-terminal|any-terminal|any-completed
+          --timeout DURATION --pane PANE_ID --prompt TEXT
+          [--poll-interval DURATION] [--label TEXT] [--dry-run] [--json]
+```
+
+`--jules` is mutually exclusive with `--after` (exactly one trigger mode per `set` call, exit `2` otherwise — the same validate-before-any-work pattern already used for `--prompt`/`--command`). `--command` delivery is **not supported** in condition mode for v1 (a condition-driven wake-up is definitionally about resuming an *agent*, not running a plain shell command — no motivating use case yet; easy to add later if one shows up). `--timeout` is **required** with `--jules` — unlike `--after`, where the deadline itself is the bound, an unbounded condition poll is a real resource leak (a typo'd or permanently-stuck session ID would poll forever). `--poll-interval` defaults to `30s`; exposed but not required.
+
+**Recommendation on Daniel's open question (dedicated `--jules` vs. generalized `--poll-cmd --until-match`): dedicated `--jules`, with the architecture built so a generic poll mode could be added later without touching the scheduler again.** Reasoning: Jules's real state model (`QUEUED`/`PLANNING`/`AWAITING_PLAN_APPROVAL`/`IN_PROGRESS`/`COMPLETED`/`AWAITING_USER_FEEDBACK`/`PAUSED`/`FAILED` — verified via the `jules-api` skill, not re-derived here) carries real, distinct meaning that a generic string-match-on-command-output would flatten. `AWAITING_USER_FEEDBACK` specifically needs to wake the pane *immediately* even though the underlying session isn't "done" — that's exactly the kind of semantic a boolean predicate loses. The `JulesAdapter` trait (Unit 08) is scoped narrowly on purpose; a future `--poll-cmd` mode would be a second implementation of a more general `ConditionChecker`-shaped trait, added when a second real use case exists — not spec'd speculatively now. This is the same "resist generality creep, solve the concrete case well" call made elsewhere in this codebase.
+
+**Condition semantics, defined precisely** (`states: &[JulesSessionState]`, one per tracked session ID) — "wake-worthy" states are `Completed | Failed | AwaitingUserFeedback | Paused` (`Paused`'s inclusion is a judgment call, not verified against detailed Jules docs — flag for confirmation at implementation time, same honesty standard as the original herdr CLI syntax before it was verified):
+- **`any-terminal`**: fires the instant *any one* tracked session reaches a wake-worthy state. For "wake me when the first of these needs me."
+- **`all-terminal`**: fires only once *every* tracked session has reached a wake-worthy state. For "wake me when the whole batch is ready to reconcile" — directly the All-Hands Phase 3 pattern (2 parallel Jules sessions per unit).
+- **`any-completed`**: fires the instant *any one* tracked session reaches specifically `Completed`. Narrower than `any-terminal` — a session that's `Failed` or `AwaitingUserFeedback` does not satisfy this on its own; only `Completed` does, or the timeout.
+
+**Pre-flight validation, mirroring the existing `--pane` check:** at schedule time (including under `--dry-run`), `set --jules` calls `JulesAdapter::check_sessions` once against the live API and fails fast with exit `3` (`TargetUnavailable` — its scope now covers "Jules session not found" in addition to "Herdr pane not found", one exit code, two documented target kinds, no new number needed) if any session ID doesn't resolve. Never arm a poll against a session that's already known not to exist.
+
+### 11.3 Template interpolation — an explicit allowlist, not a template engine
+
+`--prompt` text may contain `{session_id}`, `{status}`, `{duration}`, `{pr_urls}` (`{pr_urls}` is an addition beyond what was asked for, directly serving the stated motivation — Jules exposes a completed session's PR at `session.outputs[].pullRequest.url`, and the entire point of waking up is usually to go pull and reconcile that PR, per the All-Hands Phase 4 runbook). Interpolation happens once, at fire time (values aren't known at schedule time), in the scheduler right before calling `HerdrAdapter::deliver()` — not inside the Herdr adapter itself, since this is a `snuze`-level concern.
+
+- `{duration}`: `fired_at - created_at`, formatted human-readable (`"12m34s"`). Works for **both** trigger kinds — free consistency, no reason to scope it to Jules only.
+- `{session_id}`: the tracked session ID (single) or comma-joined list (multiple).
+- `{status}`: the bare state name for a single tracked session (`"COMPLETED"`); for multiple, comma-joined `id:state` pairs (`"sess1:COMPLETED,sess2:FAILED"`) — precise on purpose, an agent parsing this needs to know *which* session did what, not just a count.
+- `{pr_urls}`: comma-joined PR URLs for any session that completed with one attached; omitted (literal empty string is fine here specifically, since absence-of-a-PR is itself informative) if none apply.
+
+**This is a fixed allowlist, never a generic template engine, and this is a security boundary, not a style preference:** a referenced variable this list doesn't recognize is left as **literal, unsubstituted text** in the output (never silently blanked, which would look like a bug and hide a typo) — and there is no path, ever, by which arbitrary environment content (most importantly `JULES_API_KEY`) can end up interpolated into a prompt that then gets injected into a Herdr pane and potentially logged or displayed. The interpolation function takes a small, closed struct of known-safe values, never a generic key-value environment dump.
+
+### 11.4 `JulesAdapter` — a new trait, parallel to `HerdrAdapter`
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum JulesState {
+    Queued, Planning, AwaitingPlanApproval, InProgress,
+    Completed, AwaitingUserFeedback, Paused, Failed,
+    /// Escape hatch for any state string the alpha API returns that isn't modeled above yet.
+    /// Never panics on an unrecognized value — the jules-api skill's own "re-verify, alpha API"
+    /// caution applies here too.
+    Unknown(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct JulesSessionState {
+    pub session_id: String,
+    pub state: JulesState,
+    pub pull_request_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum JulesCondition { AllTerminal, AnyTerminal, AnyCompleted }
+
+impl JulesCondition {
+    #[must_use]
+    pub fn is_satisfied(&self, states: &[JulesSessionState]) -> bool { /* see Unit 07 */ }
+}
+
+pub trait JulesAdapter: Send + Sync {
+    /// Query current state for each session ID. A single network/auth failure fails the
+    /// whole batch (`SnuzeError::DaemonUnavailable`) rather than partially succeeding —
+    /// a poll tick that can't see all tracked sessions can't safely evaluate `all-terminal`.
+    fn check_sessions(&self, session_ids: &[String]) -> Result<Vec<JulesSessionState>, SnuzeError>;
+}
+```
+
+**Credentials:** `RealJulesAdapter` reads `JULES_API_KEY` from the process environment at construction — a local env var, exactly like `HERDR_PANE_ID`, **not** routed through Ciani's Hyperagent-side `jules-api` skill or its credential proxy. These are two independent integrations to the same external API, run from two different runtimes (a local daemon vs. a cloud agent); don't conflate them. Missing key at construction time is a new `SnuzeError::JulesCredentialMissing` variant, mapped to the **existing** exit code `4` (`BinaryMissing`'s slot, whose spirit — "a required external dependency isn't available" — already covers this; no new number, matching the exit-code-reuse discipline from `bplate/docs/units/10-exit-code-and-json-envelope-standard.md`).
+
+### 11.5 Unit decomposition — five new units, extending the existing dependency-layer pattern
+
+| Layer | Unit | Owns | Depends on |
+|---|---|---|---|
+| 1 | 07 — Kernel Extension (`Trigger`, `JulesCondition`, `JulesSessionState`, template interpolation) | `src/kernel/` (extends) | 01 |
+| 2 | 08 — `JulesAdapter` Trait & Mock | `src/jules/` (trait + mock only) | 07 |
+| 3 | 09 — `RealJulesAdapter` (HTTP impl) | `src/jules/adapter.rs` | 07, 08 (trait signature only) |
+| 3 | 10 — Scheduler Condition Integration | `src/scheduler/` (extends `run()`/`arm()`) | 07, 08 |
+| 4 | 11 — CLI Condition-Mode Surface | `src/cli/` (extends) | 07, 10 |
+
+Units 09 and 10 are both Layer 3 — dispatchable in parallel, same interface-first discipline used for the original Units 02/03/04 (08's contract publishes the full trait signature inline, so 09 doesn't need to wait on 08's actual merge, only its text). Mirrors the original shape (foundation → parallel middle layer → integration → surface) deliberately, so pi's fan-out runs the same rhythm as last time.
+
+### 11.6 Exit codes and JSON envelope: no new codes needed
+
+Every new failure mode this feature introduces already fits the existing `0/2/3/4/5/6` taxonomy once two things are documented (not code-changed): `TargetUnavailable` (`3`) now covers "Jules session not found" alongside "Herdr pane not found," and a new `SnuzeError::JulesCredentialMissing` variant shares `BinaryMissing`'s code (`4`) rather than minting a seventh number. A condition timing out is not a process-level error at all — like a Herdr delivery failure, it's an *alarm status* (`Failed`, reason `"timeout"`), discovered later via `snuze status`/`list`, never a `set` exit code — the same "foreground exit code and eventual outcome are different facts" principle from §5, now proven out on a second, independent feature. JSON envelope is unchanged (`{"status":"success","data":...}` / `{"status":"error","code":<n>,"message":...}`) — `Alarm`'s new fields just appear in `data` like any other field.
+
+### 11.7 Built against the post-fix delivery path — and one open question it raises
+
+This spec assumes the current (branch-tip) `RealHerdrAdapter::deliver()`, which no longer passes `--wait` to `agent prompt` (removed in `a9c31502`, after an intermediate `--until working` attempt in `6fdb422` — both already on `feature/jules-condition-mode`, read directly rather than assumed). That fix is correct: `--wait` was almost certainly blocking on the *target agent's entire subsequent turn* rather than confirming injection, which would make every real wake-up look like a timeout against the 5-second call budget. `Delivered` now means "herdr accepted and injected the text," a weaker but more honest guarantee for a primitive whose job is to wake a dormant agent, not babysit what it does next.
+
+**Open question this raises, not resolved here:** the herdr skill describes `agent_prompt_stalled` as tied to the *waiting* behavior ("a prompt sent from a non-working state must produce an observed lifecycle change within five seconds — otherwise `agent_prompt_stalled`"). Without `--wait`, it's unverified whether herdr still performs that stall-check at all — if it doesn't, `RealHerdrAdapter::deliver()`'s existing `is_prompt_stalled()` branch is now dead code, reachable only in theory. Not a defect and not blocking this feature (condition-mode fires through the same `deliver()` unchanged either way), but worth a quick check against the real binary next time someone's already in that file — flagging honestly now rather than asserting an answer I haven't verified.
+
+### 11.8 Additional Done Criteria for this feature
+
+- [ ] `Alarm`'s `schema_version`/`trigger` fields round-trip correctly for both old (`schema_version: 1`, implicit `Trigger::Deadline`) and new on-disk records — a mixed store (some alarms from before this feature, some after) must not break `list`/`scan_errors`.
+- [ ] A condition alarm's `snuze status` shows live `last_known` session states while `pending`, not just the bare status enum.
+- [ ] `any-terminal` / `all-terminal` / `any-completed` each have a test exercising the exact boundary that distinguishes them (e.g., one session `Failed` + one `InProgress` satisfies `any-terminal` but not `all-terminal` or `any-completed`).
+- [ ] The `agent_prompt_stalled` open question (§11.7) gets a one-line verified answer before it's relied upon anywhere new.
