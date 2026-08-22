@@ -1,7 +1,8 @@
 use crate::daemon::lock::DaemonLock;
 use crate::daemon::protocol::{Request, Response};
 use crate::herdr::RealHerdrAdapter;
-use crate::kernel::{AlarmStatus, SnuzeError};
+use crate::jules::adapter::RealJulesAdapter;
+use crate::kernel::{AlarmStatus, SnuzeError, Trigger};
 use crate::scheduler::{FiredEvent, Scheduler, SystemClock};
 use crate::store::AlarmStore;
 use std::io::{BufRead, BufReader, Write};
@@ -31,16 +32,26 @@ impl Daemon {
         let listener = UnixListener::bind(&sock_path)
             .map_err(|e| SnuzeError::DaemonUnavailable(format!("could not bind socket: {e}")))?;
 
-        // Initialize Herdr adapter and clock
+        // Initialize Herdr adapter, Jules adapter, and clock
         let adapter = Box::new(RealHerdrAdapter::new()?);
+        let jules_adapter: Box<dyn crate::jules::JulesAdapter> = match RealJulesAdapter::new() {
+            Ok(a) => Box::new(a),
+            Err(_) => Box::new(RealJulesAdapter::with_base_url_and_timeout(
+                String::new(),
+                std::env::var("JULES_BASE_URL")
+                    .unwrap_or_else(|_| "https://jules.googleapis.com/v1alpha".to_string()),
+                Duration::from_secs(10),
+            )),
+        };
         let clock = Box::new(SystemClock::default());
 
         let store_clone = Arc::clone(&store);
-        let on_terminal = Box::new(move |event| {
+        let on_event = Box::new(move |event| {
             let id = match &event {
                 FiredEvent::Fired { id, .. }
                 | FiredEvent::Failed { id, .. }
-                | FiredEvent::Missed { id } => id,
+                | FiredEvent::Missed { id }
+                | FiredEvent::Progress { id, .. } => id,
             };
             if let Ok(mut alarm) = store_clone.get(id) {
                 match event {
@@ -57,6 +68,20 @@ impl Daemon {
                         alarm.failure_reason =
                             Some("deadline exceeded grace window during downtime".to_string());
                     }
+                    FiredEvent::Progress {
+                        last_known,
+                        next_check_at,
+                        ..
+                    } => {
+                        if let Trigger::JulesCondition {
+                            last_known: ref mut lk,
+                            ..
+                        } = &mut alarm.trigger
+                        {
+                            *lk = last_known;
+                        }
+                        alarm.deadline = next_check_at;
+                    }
                 }
                 let _ = store_clone.put(&alarm);
             }
@@ -65,9 +90,10 @@ impl Daemon {
         // 10-minute default grace window per SPEC §3.4
         let scheduler = Arc::new(Scheduler::new(
             adapter,
+            jules_adapter,
             clock,
             Duration::from_mins(10),
-            on_terminal,
+            on_event,
         ));
 
         // Rebuild in-memory heap from durable store on boot
