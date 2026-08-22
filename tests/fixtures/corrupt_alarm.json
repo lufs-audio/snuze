@@ -1,0 +1,15 @@
+{
+  "id": "corrupted-alarm",
+  "pane_id": "w1:p1",
+  "created_by_pane": null,
+  "delivery": {
+    "mode": "prompt",
+    "text": "wake up"
+  },
+  "label": null,
+  "created_at": "invalid-timestamp",
+  "deadline": "invalid-timestamp",
+  "status": "pending",
+  "fired_at": null,
+  "failure_reason": null
+}
