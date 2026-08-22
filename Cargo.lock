@@ -399,6 +399,7 @@ dependencies = [
  "clap",
  "dirs",
  "fs2",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

@@ -8,7 +8,7 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
 #![allow(clippy::indexing_slicing)]
-#![allow(clippy::duration_suboptimal_units)]
+
 #![allow(clippy::panic)]
 
 use snuze::snuze_herdr::RealHerdrAdapter;
@@ -44,7 +44,7 @@ fn sample_alarm(delivery: DeliveryMode) -> Alarm {
         delivery,
         label: Some("test-alarm".to_string()),
         created_at: SystemTime::now(),
-        deadline: SystemTime::now() + Duration::from_secs(60),
+        deadline: SystemTime::now() + Duration::from_mins(1),
         status: AlarmStatus::Pending,
         fired_at: None,
         failure_reason: None,

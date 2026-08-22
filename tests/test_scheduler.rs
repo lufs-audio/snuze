@@ -2,7 +2,7 @@
 #![allow(clippy::expect_used)]
 #![allow(clippy::indexing_slicing)]
 #![allow(clippy::panic)]
-#![allow(clippy::duration_suboptimal_units)]
+
 
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -101,7 +101,7 @@ fn test_scheduler_fire_success() {
     let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
     let clock = FakeClock::new(base_time);
     let adapter = MockHerdrAdapter::new();
-    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_secs(600));
+    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
 
     let deadline = base_time + Duration::from_secs(30);
     scheduler.arm(create_test_alarm("alarm-1", deadline));
@@ -138,7 +138,7 @@ fn test_scheduler_cancel_pending() {
     let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
     let clock = FakeClock::new(base_time);
     let adapter = MockHerdrAdapter::new();
-    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_secs(600));
+    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
 
     let deadline = base_time + Duration::from_secs(30);
     scheduler.arm(create_test_alarm("alarm-cancel", deadline));
@@ -161,7 +161,7 @@ fn test_scheduler_deadline_ordering() {
     let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
     let clock = FakeClock::new(base_time);
     let adapter = MockHerdrAdapter::new();
-    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_secs(600));
+    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
 
     // Arm alarms out of order, 1ms apart
     let d1 = base_time + Duration::from_millis(100);
@@ -204,7 +204,7 @@ fn test_scheduler_missed_past_grace_window_at_arm_time() {
     let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
     let clock = FakeClock::new(base_time);
     let adapter = MockHerdrAdapter::new();
-    let grace_window = Duration::from_secs(600);
+    let grace_window = Duration::from_mins(10);
     let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), grace_window);
 
     // Deadline is 700s in the past (> 600s grace window)
@@ -257,7 +257,7 @@ fn test_scheduler_delivery_failure_variants() {
         adapter.set_outcome(id, outcome);
 
         let (scheduler, rx) =
-            setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_secs(600));
+            setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
 
         scheduler.arm(create_test_alarm(id, base_time + Duration::from_secs(10)));
         clock.advance(Duration::from_secs(10));
@@ -281,7 +281,7 @@ fn test_scheduler_cancel_next_due_alarm_rearms_next() {
     let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
     let clock = FakeClock::new(base_time);
     let adapter = MockHerdrAdapter::new();
-    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_secs(600));
+    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
 
     let d_early = base_time + Duration::from_secs(10);
     let d_late = base_time + Duration::from_secs(30);
