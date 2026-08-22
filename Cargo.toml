@@ -22,4 +22,4 @@ unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 indexing_slicing = "warn"
-pedantic = "warn"
+pedantic = { level = "warn", priority = -1 }
