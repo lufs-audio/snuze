@@ -1,11 +1,16 @@
 use crate::cli::args::{
     CancelArgs, DaemonAction, DaemonArgs, DoctorArgs, ListArgs, SetArgs, StatusArgs,
 };
+use crate::cli::jules_parse::{parse_jules_condition, parse_jules_session_ids};
 use crate::cli::output::CliResult;
 use crate::daemon::{Daemon, DaemonClient};
 use crate::herdr::RealHerdrAdapter;
+use crate::jules::adapter::RealJulesAdapter;
+use crate::jules::JulesAdapter;
 use crate::kernel::duration::parse_duration;
-use crate::kernel::{Alarm, AlarmStatus, DeliveryMode, SnuzeError};
+use crate::kernel::{
+    Alarm, AlarmStatus, DeliveryMode, JulesCondition, JulesState, SnuzeError, Trigger,
+};
 use crate::store::AlarmStore;
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -23,15 +28,35 @@ fn format_alarm_human(alarm: &Alarm) -> String {
     let failure_str = alarm.failure_reason.as_deref().unwrap_or("-");
     let caller_str = alarm.created_by_pane.as_deref().unwrap_or("-");
 
+    let mut status_str = format!("{:?}", alarm.status);
+    if alarm.status == AlarmStatus::Pending {
+        if let Trigger::JulesCondition { last_known, .. } = &alarm.trigger {
+            for s in last_known {
+                let state_str = match &s.state {
+                    JulesState::Queued => "QUEUED",
+                    JulesState::Planning => "PLANNING",
+                    JulesState::AwaitingPlanApproval => "AWAITING_PLAN_APPROVAL",
+                    JulesState::InProgress => "IN_PROGRESS",
+                    JulesState::Completed => "COMPLETED",
+                    JulesState::AwaitingUserFeedback => "AWAITING_USER_FEEDBACK",
+                    JulesState::Paused => "PAUSED",
+                    JulesState::Failed => "FAILED",
+                    JulesState::Unknown(other) => other.as_str(),
+                };
+                let _ = write!(status_str, "\n  {}: {}", s.session_id, state_str);
+            }
+        }
+    }
+
     format!(
         "ID: {}\n\
          Pane: {}\n\
          Created By Pane: {}\n\
-         Status: {:?}\n\
+         Status: {}\n\
          Delivery: {}\n\
          Label: {}\n\
          Failure Reason: {}",
-        alarm.id, alarm.pane_id, caller_str, alarm.status, mode_str, label_str, failure_str
+        alarm.id, alarm.pane_id, caller_str, status_str, mode_str, label_str, failure_str
     )
 }
 
@@ -39,8 +64,31 @@ fn format_alarm_human(alarm: &Alarm) -> String {
 ///
 /// # Errors
 /// Returns `SnuzeError` if argument validation, storage persistence, or daemon communication fails.
+#[allow(clippy::too_many_lines)]
 pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
-    if (args.prompt.is_some() && args.command.is_some())
+    let is_after = args.after.is_some();
+    let is_jules = args.jules.is_some();
+
+    // 1. Exactly one of --after or --jules must be present
+    if is_after == is_jules {
+        return Err(SnuzeError::ConflictingFlags(
+            "exactly one of --after or --jules is required".to_string(),
+        ));
+    }
+
+    // 2. Delivery mode validation
+    if is_jules {
+        if args.command.is_some() {
+            return Err(SnuzeError::ConflictingFlags(
+                "--command is not supported with --jules (condition mode does not support command delivery)".to_string(),
+            ));
+        }
+        if args.prompt.is_none() {
+            return Err(SnuzeError::ConflictingFlags(
+                "--prompt is required with --jules".to_string(),
+            ));
+        }
+    } else if (args.prompt.is_some() && args.command.is_some())
         || (args.prompt.is_none() && args.command.is_none())
     {
         return Err(SnuzeError::ConflictingFlags(
@@ -48,11 +96,74 @@ pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
         ));
     }
 
-    let duration = parse_duration(&args.after)?;
+    // 3. If --jules, --condition and --timeout are both required
+    if is_jules {
+        if args.condition.is_none() {
+            return Err(SnuzeError::ConflictingFlags(
+                "--condition is required with --jules".to_string(),
+            ));
+        }
+        if args.timeout.is_none() {
+            return Err(SnuzeError::ConflictingFlags(
+                "--timeout is required with --jules".to_string(),
+            ));
+        }
+    }
 
+    // 4. Parse --condition if given
+    let parsed_condition = if is_jules {
+        if let Some(ref cond_str) = args.condition {
+            Some(parse_jules_condition(cond_str)?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // 5. Parse duration / timeout and poll-interval
+    let (after_duration, timeout_duration, poll_interval_duration) = if is_jules {
+        let timeout_str = args.timeout.as_deref().unwrap_or_default();
+        let timeout_dur = parse_duration(timeout_str)?;
+        let poll_interval_dur = if let Some(ref pi) = args.poll_interval {
+            parse_duration(pi)?
+        } else {
+            std::time::Duration::from_secs(30)
+        };
+        (None, Some(timeout_dur), Some(poll_interval_dur))
+    } else {
+        let after_str = args.after.as_deref().unwrap_or_default();
+        let after_dur = parse_duration(after_str)?;
+        (Some(after_dur), None, None)
+    };
+
+    // 6. Split --jules session IDs
+    let session_ids = if is_jules {
+        let jules_str = args.jules.as_deref().unwrap_or_default();
+        Some(parse_jules_session_ids(jules_str)?)
+    } else {
+        None
+    };
+
+    // Pre-flight pane check
     let adapter = RealHerdrAdapter::new()?;
     if !adapter.pane_exists(&args.pane)? {
         return Err(SnuzeError::PaneNotFound(args.pane));
+    }
+
+    // Pre-flight Jules check
+    if is_jules {
+        let jules_adapter = RealJulesAdapter::new()?;
+        if let Some(ref ids) = session_ids {
+            jules_adapter.check_sessions(ids).map_err(|e| match e {
+                SnuzeError::PaneNotFound(msg) => SnuzeError::PaneNotFound(msg),
+                SnuzeError::JulesCredentialMissing => SnuzeError::JulesCredentialMissing,
+                SnuzeError::DaemonUnavailable(msg) if msg.contains("not found") => {
+                    SnuzeError::PaneNotFound(msg)
+                }
+                other => other,
+            })?;
+        }
     }
 
     let created_by_pane = std::env::var("HERDR_PANE_ID").ok();
@@ -68,7 +179,23 @@ pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
     };
 
     let now = SystemTime::now();
-    let deadline = now + duration;
+    let (deadline, trigger, schema_version) = if is_jules {
+        let timeout_dur = timeout_duration.unwrap_or(std::time::Duration::from_mins(5));
+        let poll_dur = poll_interval_duration.unwrap_or(std::time::Duration::from_secs(30));
+        let timeout_at = now + timeout_dur;
+        let next_check = now + poll_dur;
+        let trigger = Trigger::JulesCondition {
+            session_ids: session_ids.unwrap_or_default(),
+            condition: parsed_condition.unwrap_or(JulesCondition::AllTerminal),
+            poll_interval_secs: poll_dur.as_secs(),
+            timeout_at,
+            last_known: Vec::new(),
+        };
+        (next_check, trigger, 2)
+    } else {
+        let dur = after_duration.unwrap_or(std::time::Duration::from_secs(0));
+        (now + dur, Trigger::Deadline, 1)
+    };
 
     let alarm = Alarm {
         id: Uuid::now_v7().to_string(),
@@ -81,6 +208,8 @@ pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
         status: AlarmStatus::Pending,
         fired_at: None,
         failure_reason: None,
+        trigger,
+        schema_version,
     };
 
     if args.dry_run {

@@ -1,4 +1,9 @@
+use super::trigger::Trigger;
 use std::time::SystemTime;
+
+const fn default_schema_version() -> u32 {
+    1
+}
 
 /// Status lifecycle for an alarm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -36,7 +41,7 @@ pub struct Alarm {
     pub label: Option<String>,
     /// Timestamp when the alarm was scheduled.
     pub created_at: SystemTime,
-    /// Timestamp when the alarm should fire.
+    /// Timestamp when the alarm should fire (for `Deadline` triggers) or when it should next check condition (for `JulesCondition` triggers).
     pub deadline: SystemTime,
     /// Current lifecycle status.
     pub status: AlarmStatus,
@@ -44,4 +49,10 @@ pub struct Alarm {
     pub fired_at: Option<SystemTime>,
     /// Reason string if delivery failed, missed, or was canceled.
     pub failure_reason: Option<String>,
+    /// Trigger that fires this alarm.
+    #[serde(default)]
+    pub trigger: Trigger,
+    /// Schema version for on-disk persistence compatibility.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
 }
