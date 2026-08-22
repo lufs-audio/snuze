@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use snuze::kernel::{Alarm, AlarmStatus, DeliveryMode};
+use snuze::kernel::{Alarm, AlarmStatus, DeliveryMode, Trigger};
 use snuze::scheduler::{
     DeliveryOutcome, FakeClock, FiredEvent, HerdrAdapter, Scheduler,
 };
@@ -70,6 +70,8 @@ fn create_test_alarm(id: &str, deadline: SystemTime) -> Alarm {
         status: AlarmStatus::Pending,
         fired_at: None,
         failure_reason: None,
+        trigger: Trigger::Deadline,
+        schema_version: 1,
     }
 }
 

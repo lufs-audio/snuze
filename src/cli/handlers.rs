@@ -5,7 +5,7 @@ use crate::cli::output::CliResult;
 use crate::daemon::{Daemon, DaemonClient};
 use crate::herdr::RealHerdrAdapter;
 use crate::kernel::duration::parse_duration;
-use crate::kernel::{Alarm, AlarmStatus, DeliveryMode, SnuzeError};
+use crate::kernel::{Alarm, AlarmStatus, DeliveryMode, SnuzeError, Trigger};
 use crate::store::AlarmStore;
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -81,6 +81,8 @@ pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
         status: AlarmStatus::Pending,
         fired_at: None,
         failure_reason: None,
+        trigger: Trigger::default(),
+        schema_version: 1,
     };
 
     if args.dry_run {

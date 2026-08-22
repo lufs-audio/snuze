@@ -1,4 +1,6 @@
-use snuze::kernel::{parse_duration, Alarm, AlarmStatus, DeliveryMode, ExitCode, SnuzeError};
+use snuze::kernel::{
+    parse_duration, Alarm, AlarmStatus, DeliveryMode, ExitCode, SnuzeError, Trigger,
+};
 use std::time::{Duration, UNIX_EPOCH};
 
 #[test]
@@ -158,6 +160,8 @@ fn test_alarm_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         status: AlarmStatus::Fired,
         fired_at: Some(fired_at),
         failure_reason: None,
+        trigger: Trigger::Deadline,
+        schema_version: 1,
     };
 
     let json = serde_json::to_string(&alarm)?;
@@ -216,6 +220,8 @@ fn test_alarm_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         status: AlarmStatus::Failed,
         fired_at: None,
         failure_reason: Some("Pane exited unexpectedly".to_string()),
+        trigger: Trigger::Deadline,
+        schema_version: 1,
     };
 
     let minimal_json = serde_json::to_string(&minimal_alarm)?;

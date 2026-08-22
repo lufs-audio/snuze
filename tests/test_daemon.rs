@@ -2,7 +2,7 @@
 #![allow(clippy::indexing_slicing)]
 
 use snuze::daemon::{Daemon, DaemonClient};
-use snuze::kernel::{Alarm, AlarmStatus, DeliveryMode, SnuzeError};
+use snuze::kernel::{Alarm, AlarmStatus, DeliveryMode, SnuzeError, Trigger};
 use snuze::store::AlarmStore;
 use std::path::PathBuf;
 use std::thread;
@@ -30,6 +30,8 @@ fn create_test_alarm() -> Alarm {
         status: AlarmStatus::Pending,
         fired_at: None,
         failure_reason: None,
+        trigger: Trigger::Deadline,
+        schema_version: 1,
     }
 }
 
@@ -195,6 +197,8 @@ fn test_daemon_missed_alarm_recovery_on_boot() -> Result<(), Box<dyn std::error:
         status: AlarmStatus::Pending,
         fired_at: None,
         failure_reason: None,
+        trigger: Trigger::Deadline,
+        schema_version: 1,
     };
     store.put(&overdue_alarm)?;
 

@@ -13,6 +13,8 @@ pub enum SnuzeError {
     PersistFailed(String),
     #[error("herdr binary not found on PATH")]
     HerdrBinaryMissing,
+    #[error("JULES_API_KEY not set in environment")]
+    JulesCredentialMissing,
     #[error("snuze daemon unavailable: {0}")]
     DaemonUnavailable(String),
 }
@@ -44,7 +46,9 @@ impl From<&SnuzeError> for ExitCode {
             SnuzeError::PaneNotFound(_) | SnuzeError::AlarmNotFound(_) => {
                 ExitCode::TargetUnavailable
             }
-            SnuzeError::HerdrBinaryMissing => ExitCode::BinaryMissing,
+            SnuzeError::HerdrBinaryMissing | SnuzeError::JulesCredentialMissing => {
+                ExitCode::BinaryMissing
+            }
             SnuzeError::PersistFailed(_) => ExitCode::ContractViolated,
             SnuzeError::DaemonUnavailable(_) => ExitCode::DaemonUnavailable,
         }

@@ -7,7 +7,7 @@ use std::fs;
 use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 
-use snuze::kernel::{Alarm, AlarmStatus, DeliveryMode, SnuzeError};
+use snuze::kernel::{Alarm, AlarmStatus, DeliveryMode, SnuzeError, Trigger};
 use snuze::store::{resolve_state_dir, AlarmStore};
 
 fn make_alarm(id: &str, deadline_offset_secs: u64, status: AlarmStatus) -> Alarm {
@@ -25,6 +25,8 @@ fn make_alarm(id: &str, deadline_offset_secs: u64, status: AlarmStatus) -> Alarm
         status,
         fired_at: None,
         failure_reason: None,
+        trigger: Trigger::Deadline,
+        schema_version: 1,
     }
 }
 
