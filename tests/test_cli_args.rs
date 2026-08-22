@@ -11,7 +11,7 @@ fn test_set_args_valid_prompt() {
     ];
     let cli = Cli::try_parse_from(args).unwrap();
     if let Command::Set(set) = cli.command {
-        assert_eq!(set.after, "30s");
+        assert_eq!(set.after.as_deref(), Some("30s"));
         assert_eq!(set.pane, "w1:p3");
         assert_eq!(set.prompt.as_deref(), Some("Wake up"));
         assert!(set.command.is_none());
@@ -40,7 +40,7 @@ fn test_set_args_valid_command() {
     ];
     let cli = Cli::try_parse_from(args).unwrap();
     if let Command::Set(set) = cli.command {
-        assert_eq!(set.after, "1h30m");
+        assert_eq!(set.after.as_deref(), Some("1h30m"));
         assert_eq!(set.pane, "w1:p2");
         assert_eq!(set.command.as_deref(), Some("cargo test"));
         assert!(set.prompt.is_none());
@@ -54,13 +54,15 @@ fn test_set_args_valid_command() {
 
 #[test]
 fn test_set_args_missing_required() {
-    // Missing --pane
+    // Missing --pane (required field)
     let args = ["snuze", "set", "--after", "30s", "--prompt", "hi"];
     assert!(Cli::try_parse_from(args).is_err());
 
-    // Missing --after
+    // Missing --after is no longer a parse-level error: --after is optional when --jules is used.
+    // The "exactly one of --after or --jules" validation moves to the handler (handle_set).
+    // Here we just verify that parsing succeeds without --after.
     let args = ["snuze", "set", "--pane", "w1:p3", "--prompt", "hi"];
-    assert!(Cli::try_parse_from(args).is_err());
+    assert!(Cli::try_parse_from(args).is_ok());
 }
 
 #[test]

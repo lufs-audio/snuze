@@ -16,6 +16,25 @@ pub enum JulesState {
     Unknown(String),
 }
 
+
+impl JulesState {
+    /// Returns the uppercase string representation of the state.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Queued => "QUEUED",
+            Self::Planning => "PLANNING",
+            Self::AwaitingPlanApproval => "AWAITING_PLAN_APPROVAL",
+            Self::InProgress => "IN_PROGRESS",
+            Self::Completed => "COMPLETED",
+            Self::AwaitingUserFeedback => "AWAITING_USER_FEEDBACK",
+            Self::Paused => "PAUSED",
+            Self::Failed => "FAILED",
+            Self::Unknown(s) => s.as_str(),
+        }
+    }
+}
+
 impl Serialize for JulesState {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
