@@ -116,7 +116,9 @@ impl Scheduler {
                     }
                 }
             }
-            Trigger::JulesCondition { timeout_at, .. } => {
+            Trigger::JulesCondition { timeout_at, .. }
+            | Trigger::HerdrStatus { timeout_at, .. }
+            | Trigger::ExternalSignal { timeout_at, .. } => {
                 if now >= *timeout_at {
                     (self.on_event)(FiredEvent::Failed {
                         id: alarm.id,
@@ -204,6 +206,9 @@ impl Scheduler {
                 match &alarm.trigger {
                     Trigger::Deadline => self.process_deadline_alarm(alarm, now),
                     Trigger::JulesCondition { .. } => self.process_jules_alarm(alarm, now),
+                    Trigger::HerdrStatus { .. } | Trigger::ExternalSignal { .. } => {
+                        self.process_deadline_alarm(alarm, now);
+                    }
                 }
             } else if let Some(deadline) = wait_deadline {
                 self.clock.wait_until(deadline);
@@ -280,24 +285,25 @@ impl Scheduler {
             return;
         }
 
-        let (session_ids, condition, poll_interval_secs, timeout_at) = match &alarm.trigger {
-            Trigger::JulesCondition {
+        let (session_ids, condition, poll_interval_secs, timeout_at) =
+            if let Trigger::JulesCondition {
                 session_ids,
                 condition,
                 poll_interval_secs,
                 timeout_at,
                 ..
-            } => (
-                session_ids.clone(),
-                *condition,
-                *poll_interval_secs,
-                *timeout_at,
-            ),
-            Trigger::Deadline => {
+            } = &alarm.trigger
+            {
+                (
+                    session_ids.clone(),
+                    *condition,
+                    *poll_interval_secs,
+                    *timeout_at,
+                )
+            } else {
                 self.finish_in_flight(&alarm.id);
                 return;
-            }
-        };
+            };
 
         let check_result = self.jules_adapter.check_sessions(&session_ids);
 
