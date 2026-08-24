@@ -2,6 +2,23 @@ use super::jules_state::{JulesSessionState, JulesState};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HerdrWatchStatus {
+    Idle,
+    Done,
+    Blocked,
+    Working,
+}
+
+#[must_use]
+pub fn herdr_status_satisfied(watch_for: &[HerdrWatchStatus], current: HerdrWatchStatus) -> bool {
+    if watch_for.is_empty() {
+        return false;
+    }
+    watch_for.contains(&current)
+}
+
 /// Condition evaluated against tracked Jules session states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -51,5 +68,15 @@ pub enum Trigger {
         poll_interval_secs: u64,
         timeout_at: SystemTime,
         last_known: Vec<JulesSessionState>,
+    },
+    HerdrStatus {
+        watched_pane_id: String,
+        watch_for: Vec<HerdrWatchStatus>,
+        timeout_at: SystemTime,
+        last_known: Option<HerdrWatchStatus>,
+    },
+    ExternalSignal {
+        match_key: String,
+        timeout_at: SystemTime,
     },
 }
