@@ -131,13 +131,10 @@ fn test_real_jules_adapter_404_session_not_found() {
         .expect_err("should fail on 404");
 
     match err {
-        SnuzeError::DaemonUnavailable(msg) => {
-            assert!(
-                msg.contains("missing-sess"),
-                "msg should contain session id: {msg}"
-            );
+        SnuzeError::JulesSessionNotFound(session_id) => {
+            assert_eq!(session_id, "missing-sess");
         }
-        _ => panic!("expected DaemonUnavailable, got {err:?}"),
+        _ => panic!("expected JulesSessionNotFound, got {err:?}"),
     }
 }
 

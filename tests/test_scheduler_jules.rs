@@ -618,3 +618,45 @@ fn test_deadline_prompt_duration_interpolation() {
         _ => panic!("expected Prompt delivery"),
     }
 }
+
+#[test]
+fn test_jules_credential_missing_fails_immediately_without_waiting_for_timeout() {
+    let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(90_000);
+    let clock = FakeClock::new(base_time);
+    let herdr = MockHerdrAdapter::new();
+    let jules = MockJulesAdapter::new(vec![]);
+    jules.set_error(snuze::kernel::SnuzeError::JulesCredentialMissing);
+
+    let (scheduler, rx) = setup_scheduler(
+        clock.clone(),
+        herdr.clone(),
+        jules.clone(),
+        Duration::from_mins(10),
+    );
+
+    let alarm = create_jules_alarm(
+        "cred-missing-alarm",
+        base_time,
+        base_time + Duration::from_secs(10),
+        vec!["sess-1".to_string()],
+        JulesCondition::AnyTerminal,
+        30,
+        base_time + Duration::from_secs(3600), // 1 hour timeout
+        "Wake up",
+    );
+    scheduler.arm(alarm);
+
+    clock.advance(Duration::from_secs(10));
+
+    let ev = rx.recv_timeout(Duration::from_millis(500)).expect("expected Failed event immediately");
+    match ev {
+        FiredEvent::Failed { id, reason } => {
+            assert_eq!(id, "cred-missing-alarm");
+            assert_eq!(reason, "JULES_API_KEY not set in environment");
+        }
+        other => panic!("expected Failed(JulesCredentialMissing), got {other:?}"),
+    }
+
+    assert_eq!(jules.call_count(), 1);
+    assert_eq!(herdr.delivered_count(), 0);
+}

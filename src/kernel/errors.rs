@@ -1,5 +1,5 @@
 /// Domain errors for `snuze`.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum SnuzeError {
     #[error("invalid duration: {0}")]
     InvalidDuration(String),
@@ -7,6 +7,8 @@ pub enum SnuzeError {
     ConflictingFlags(String),
     #[error("herdr pane not found: {0}")]
     PaneNotFound(String),
+    #[error("Jules session not found: {0}")]
+    JulesSessionNotFound(String),
     #[error("alarm not found: {0}")]
     AlarmNotFound(String),
     #[error("could not persist alarm: {0}")]
@@ -43,9 +45,9 @@ impl From<&SnuzeError> for ExitCode {
     fn from(e: &SnuzeError) -> Self {
         match e {
             SnuzeError::InvalidDuration(_) | SnuzeError::ConflictingFlags(_) => ExitCode::Usage,
-            SnuzeError::PaneNotFound(_) | SnuzeError::AlarmNotFound(_) => {
-                ExitCode::TargetUnavailable
-            }
+            SnuzeError::PaneNotFound(_)
+            | SnuzeError::JulesSessionNotFound(_)
+            | SnuzeError::AlarmNotFound(_) => ExitCode::TargetUnavailable,
             SnuzeError::HerdrBinaryMissing | SnuzeError::JulesCredentialMissing => {
                 ExitCode::BinaryMissing
             }

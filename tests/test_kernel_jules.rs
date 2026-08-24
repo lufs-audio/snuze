@@ -287,6 +287,21 @@ fn test_jules_state_serde_and_unknown_fallback() {
         assert_eq!(parsed, expected_state, "Mismatch for input {raw_str:?}");
     }
 
+    // Serializing standard states should produce UPPERCASE strings matching as_str()
+    for state in [
+        JulesState::Queued,
+        JulesState::Planning,
+        JulesState::AwaitingPlanApproval,
+        JulesState::InProgress,
+        JulesState::Completed,
+        JulesState::AwaitingUserFeedback,
+        JulesState::Paused,
+        JulesState::Failed,
+    ] {
+        let serialized = serde_json::to_string(&state).expect("serialize");
+        assert_eq!(serialized, format!("\"{}\"", state.as_str()));
+    }
+
     // Serializing unknown state should produce the original string
     let unknown_state = JulesState::Unknown("MY_CUSTOM_STATE".to_string());
     let serialized = serde_json::to_string(&unknown_state).expect("serialize unknown");
@@ -300,4 +315,11 @@ fn test_jules_credential_missing_exit_code() {
     let err = SnuzeError::JulesCredentialMissing;
     assert_eq!(ExitCode::from(&err), ExitCode::BinaryMissing);
     assert_eq!(ExitCode::from(err), ExitCode::BinaryMissing);
+}
+
+#[test]
+fn test_jules_session_not_found_exit_code() {
+    let err = SnuzeError::JulesSessionNotFound("sess-123".to_string());
+    assert_eq!(ExitCode::from(&err), ExitCode::TargetUnavailable);
+    assert_eq!(err.to_string(), "Jules session not found: sess-123");
 }

@@ -2,7 +2,7 @@
 #![allow(clippy::panic)]
 
 use clap::Parser;
-use snuze::cli::args::{Cli, Command};
+use snuze::cli::args::{Cli, Command, SetArgs};
 
 #[test]
 fn test_set_args_valid_prompt() {
@@ -160,6 +160,156 @@ fn test_daemon_args() {
             ..
         })
     ));
+}
+
+#[test]
+fn test_set_args_valid_jules() {
+    let args = [
+        "snuze",
+        "set",
+        "--jules",
+        "sess-1,sess-2",
+        "--condition",
+        "all-terminal",
+        "--timeout",
+        "15m",
+        "--poll-interval",
+        "45s",
+        "--pane",
+        "w1:p3",
+        "--prompt",
+        "Jules done",
+        "--label",
+        "jules-wake",
+        "--dry-run",
+        "--json",
+    ];
+    let cli = Cli::try_parse_from(args).unwrap();
+    if let Command::Set(set) = cli.command {
+        assert_eq!(set.jules.as_deref(), Some("sess-1,sess-2"));
+        assert_eq!(set.condition.as_deref(), Some("all-terminal"));
+        assert_eq!(set.timeout.as_deref(), Some("15m"));
+        assert_eq!(set.poll_interval.as_deref(), Some("45s"));
+        assert_eq!(set.pane, "w1:p3");
+        assert_eq!(set.prompt.as_deref(), Some("Jules done"));
+        assert!(set.command.is_none());
+        assert_eq!(set.label.as_deref(), Some("jules-wake"));
+        assert!(set.dry_run);
+        assert!(set.json);
+    } else {
+        panic!("Expected Set command");
+    }
+}
+
+#[test]
+fn test_set_jules_validation_errors() {
+    use snuze::cli::handlers::handle_set;
+    use snuze::kernel::ExitCode;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let state_dir = temp_dir.path();
+
+    // 1. Missing --condition with --jules
+    let args = SetArgs {
+        after: None,
+        jules: Some("sess-1".to_string()),
+        condition: None,
+        timeout: Some("10m".to_string()),
+        poll_interval: None,
+        pane: "w1:p1".to_string(),
+        prompt: Some("Wake".to_string()),
+        command: None,
+        label: None,
+        dry_run: true,
+        json: false,
+    };
+    let err = handle_set(args, state_dir).unwrap_err();
+    assert_eq!(ExitCode::from(&err), ExitCode::Usage);
+
+    // 2. Missing --timeout with --jules
+    let args = SetArgs {
+        after: None,
+        jules: Some("sess-1".to_string()),
+        condition: Some("all-terminal".to_string()),
+        timeout: None,
+        poll_interval: None,
+        pane: "w1:p1".to_string(),
+        prompt: Some("Wake".to_string()),
+        command: None,
+        label: None,
+        dry_run: true,
+        json: false,
+    };
+    let err = handle_set(args, state_dir).unwrap_err();
+    assert_eq!(ExitCode::from(&err), ExitCode::Usage);
+
+    // 3. --command given with --jules
+    let args = SetArgs {
+        after: None,
+        jules: Some("sess-1".to_string()),
+        condition: Some("all-terminal".to_string()),
+        timeout: Some("10m".to_string()),
+        poll_interval: None,
+        pane: "w1:p1".to_string(),
+        prompt: None,
+        command: Some("cargo check".to_string()),
+        label: None,
+        dry_run: true,
+        json: false,
+    };
+    let err = handle_set(args, state_dir).unwrap_err();
+    assert_eq!(ExitCode::from(&err), ExitCode::Usage);
+
+    // 4. Both --after and --jules provided
+    let args = SetArgs {
+        after: Some("10s".to_string()),
+        jules: Some("sess-1".to_string()),
+        condition: Some("all-terminal".to_string()),
+        timeout: Some("10m".to_string()),
+        poll_interval: None,
+        pane: "w1:p1".to_string(),
+        prompt: Some("Wake".to_string()),
+        command: None,
+        label: None,
+        dry_run: true,
+        json: false,
+    };
+    let err = handle_set(args, state_dir).unwrap_err();
+    assert_eq!(ExitCode::from(&err), ExitCode::Usage);
+
+    // 5. Malformed --jules (trailing comma)
+    let args = SetArgs {
+        after: None,
+        jules: Some("sess-1,".to_string()),
+        condition: Some("all-terminal".to_string()),
+        timeout: Some("10m".to_string()),
+        poll_interval: None,
+        pane: "w1:p1".to_string(),
+        prompt: Some("Wake".to_string()),
+        command: None,
+        label: None,
+        dry_run: true,
+        json: false,
+    };
+    let err = handle_set(args, state_dir).unwrap_err();
+    assert_eq!(ExitCode::from(&err), ExitCode::Usage);
+
+    // 6. Unrecognized --condition
+    let args = SetArgs {
+        after: None,
+        jules: Some("sess-1".to_string()),
+        condition: Some("invalid-condition".to_string()),
+        timeout: Some("10m".to_string()),
+        poll_interval: None,
+        pane: "w1:p1".to_string(),
+        prompt: Some("Wake".to_string()),
+        command: None,
+        label: None,
+        dry_run: true,
+        json: false,
+    };
+    let err = handle_set(args, state_dir).unwrap_err();
+    assert_eq!(ExitCode::from(&err), ExitCode::Usage);
 }
 
 #[test]
