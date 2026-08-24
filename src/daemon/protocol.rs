@@ -1,3 +1,4 @@
+use crate::daemon::outbox::OutboxEvent;
 use crate::kernel::{Alarm, AlarmStatus};
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +11,7 @@ pub enum Request {
     ListAlarms(Option<AlarmStatus>),
     GetAlarm(String),
     CancelAlarm(String),
+    DrainEvents,
     Shutdown,
     Ping,
 }
@@ -25,4 +27,5 @@ pub enum Response {
     CancelResult(bool),
     NotFound(String),
     Error(String),
+    EventsDrained(Vec<OutboxEvent>),
 }

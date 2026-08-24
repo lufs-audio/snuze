@@ -23,6 +23,8 @@ pub enum Command {
     Cancel(CancelArgs),
     /// Control the background snuze daemon
     Daemon(DaemonArgs),
+    /// Manage and drain the local event outbox
+    Events(EventsArgs),
     /// Run diagnostic health checks
     Doctor(DoctorArgs),
 }
@@ -141,4 +143,20 @@ pub struct DoctorArgs {
     /// Output in structured JSON format
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct EventsArgs {
+    #[command(subcommand)]
+    pub action: EventsAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum EventsAction {
+    /// Drain all terminal alarm events from the daemon's local outbox
+    Drain {
+        /// Output in structured JSON format
+        #[arg(long)]
+        json: bool,
+    },
 }

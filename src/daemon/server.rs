@@ -1,4 +1,5 @@
 use crate::daemon::lock::DaemonLock;
+use crate::daemon::outbox::{EventOutbox, OutboxEvent};
 use crate::daemon::protocol::{Request, Response};
 use crate::herdr::RealHerdrAdapter;
 use crate::jules::adapter::RealJulesAdapter;
@@ -24,6 +25,7 @@ impl Daemon {
     pub fn run_foreground(state_dir: &Path) -> Result<(), SnuzeError> {
         let _lock = DaemonLock::acquire(state_dir)?;
         let store = Arc::new(AlarmStore::open(state_dir)?);
+        let outbox = Arc::new(EventOutbox::open(state_dir)?);
 
         let sock_path = state_dir.join("daemon.sock");
         if sock_path.exists() {
@@ -46,6 +48,7 @@ impl Daemon {
         let clock = Box::new(SystemClock::default());
 
         let store_clone = Arc::clone(&store);
+        let outbox_clone = Arc::clone(&outbox);
         let on_event = Box::new(move |event| {
             let id = match &event {
                 FiredEvent::Fired { id, .. }
@@ -57,19 +60,23 @@ impl Daemon {
                 if alarm.status != AlarmStatus::Pending {
                     return;
                 }
+                let mut is_terminal = false;
                 match event {
                     FiredEvent::Fired { at, .. } => {
                         alarm.status = AlarmStatus::Fired;
                         alarm.fired_at = Some(at);
+                        is_terminal = true;
                     }
                     FiredEvent::Failed { reason, .. } => {
                         alarm.status = AlarmStatus::Failed;
                         alarm.failure_reason = Some(reason);
+                        is_terminal = true;
                     }
                     FiredEvent::Missed { .. } => {
                         alarm.status = AlarmStatus::Missed;
                         alarm.failure_reason =
                             Some("deadline exceeded grace window during downtime".to_string());
+                        is_terminal = true;
                     }
                     FiredEvent::Progress {
                         last_known,
@@ -87,6 +94,11 @@ impl Daemon {
                     }
                 }
                 let _ = store_clone.put(&alarm);
+
+                if is_terminal {
+                    let outbox_event = OutboxEvent::from_terminal_alarm(&alarm, alarm.status);
+                    let _ = outbox_clone.append(&outbox_event);
+                }
             }
         });
 
@@ -207,11 +219,23 @@ impl Daemon {
                             if alarm.status == AlarmStatus::Pending {
                                 alarm.status = AlarmStatus::Canceled;
                                 let _ = store.put(&alarm);
+                                let outbox_event =
+                                    OutboxEvent::from_terminal_alarm(&alarm, AlarmStatus::Canceled);
+                                let _ = outbox.append(&outbox_event);
                                 found = true;
                             }
                         }
 
                         let resp = Response::CancelResult(found);
+                        if let Ok(resp_json) = serde_json::to_string(&resp) {
+                            let _ = writeln!(stream, "{resp_json}");
+                        }
+                    }
+                    Request::DrainEvents => {
+                        let resp = match outbox.drain() {
+                            Ok(events) => Response::EventsDrained(events),
+                            Err(e) => Response::Error(e.to_string()),
+                        };
                         if let Ok(resp_json) = serde_json::to_string(&resp) {
                             let _ = writeln!(stream, "{resp_json}");
                         }

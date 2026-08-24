@@ -1,3 +1,4 @@
+use crate::daemon::outbox::OutboxEvent;
 use crate::daemon::protocol::{Request, Response};
 use crate::kernel::{Alarm, AlarmStatus, SnuzeError};
 use std::io::{BufRead, BufReader, Write};
@@ -127,6 +128,20 @@ impl DaemonClient {
             Response::Ok => Ok(()),
             _ => Err(SnuzeError::DaemonUnavailable(
                 "unexpected daemon response for ping".to_string(),
+            )),
+        }
+    }
+
+    /// Drains terminal events from the local outbox via the daemon.
+    ///
+    /// # Errors
+    /// Returns `SnuzeError::DaemonUnavailable` or `PersistFailed` on error.
+    pub fn drain_events(&self) -> Result<Vec<OutboxEvent>, SnuzeError> {
+        match self.send_request(&Request::DrainEvents)? {
+            Response::EventsDrained(events) => Ok(events),
+            Response::Error(msg) => Err(SnuzeError::PersistFailed(msg)),
+            _ => Err(SnuzeError::DaemonUnavailable(
+                "unexpected daemon response for drain_events".to_string(),
             )),
         }
     }
