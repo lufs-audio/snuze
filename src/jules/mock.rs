@@ -15,7 +15,7 @@ pub trait JulesAdapter: Send + Sync {
 
 /// Inner state shared (and cloned) across `MockJulesAdapter` instances.
 struct MockInner {
-    response: Mutex<Result<Vec<JulesSessionState>, String>>,
+    response: Mutex<Result<Vec<JulesSessionState>, SnuzeError>>,
     calls: Mutex<Vec<Vec<String>>>,
 }
 
@@ -52,7 +52,16 @@ impl MockJulesAdapter {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
-        *guard = Err(reason.to_string());
+        *guard = Err(SnuzeError::DaemonUnavailable(reason.to_string()));
+    }
+
+    /// Make subsequent calls fail with a specific `SnuzeError`.
+    pub fn set_error(&self, error: SnuzeError) {
+        let mut guard = match self.inner.response.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        *guard = Err(error);
     }
 
     /// Number of times `check_sessions` has been called so far.
@@ -100,7 +109,7 @@ impl JulesAdapter for MockJulesAdapter {
         };
         match &*guard {
             Ok(states) => Ok(states.clone()),
-            Err(reason) => Err(SnuzeError::DaemonUnavailable(reason.clone())),
+            Err(err) => Err(err.clone()),
         }
     }
 }

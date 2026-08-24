@@ -9,7 +9,7 @@ use crate::jules::adapter::RealJulesAdapter;
 use crate::jules::JulesAdapter;
 use crate::kernel::duration::parse_duration;
 use crate::kernel::{
-    Alarm, AlarmStatus, DeliveryMode, JulesCondition, JulesState, SnuzeError, Trigger,
+    Alarm, AlarmStatus, DeliveryMode, JulesCondition, SnuzeError, Trigger,
 };
 use crate::store::AlarmStore;
 use std::collections::HashMap;
@@ -32,18 +32,7 @@ fn format_alarm_human(alarm: &Alarm) -> String {
     if alarm.status == AlarmStatus::Pending {
         if let Trigger::JulesCondition { last_known, .. } = &alarm.trigger {
             for s in last_known {
-                let state_str = match &s.state {
-                    JulesState::Queued => "QUEUED",
-                    JulesState::Planning => "PLANNING",
-                    JulesState::AwaitingPlanApproval => "AWAITING_PLAN_APPROVAL",
-                    JulesState::InProgress => "IN_PROGRESS",
-                    JulesState::Completed => "COMPLETED",
-                    JulesState::AwaitingUserFeedback => "AWAITING_USER_FEEDBACK",
-                    JulesState::Paused => "PAUSED",
-                    JulesState::Failed => "FAILED",
-                    JulesState::Unknown(other) => other.as_str(),
-                };
-                let _ = write!(status_str, "\n  {}: {}", s.session_id, state_str);
+                let _ = write!(status_str, "\n  {}: {}", s.session_id, s.state.as_str());
             }
         }
     }
@@ -155,14 +144,7 @@ pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
     if is_jules {
         let jules_adapter = RealJulesAdapter::new()?;
         if let Some(ref ids) = session_ids {
-            jules_adapter.check_sessions(ids).map_err(|e| match e {
-                SnuzeError::PaneNotFound(msg) => SnuzeError::PaneNotFound(msg),
-                SnuzeError::JulesCredentialMissing => SnuzeError::JulesCredentialMissing,
-                SnuzeError::DaemonUnavailable(msg) if msg.contains("not found") => {
-                    SnuzeError::PaneNotFound(msg)
-                }
-                other => other,
-            })?;
+            jules_adapter.check_sessions(ids)?;
         }
     }
 

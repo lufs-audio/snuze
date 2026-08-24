@@ -40,17 +40,7 @@ impl Serialize for JulesState {
     where
         S: Serializer,
     {
-        match self {
-            Self::Queued => serializer.serialize_str("Queued"),
-            Self::Planning => serializer.serialize_str("Planning"),
-            Self::AwaitingPlanApproval => serializer.serialize_str("AwaitingPlanApproval"),
-            Self::InProgress => serializer.serialize_str("InProgress"),
-            Self::Completed => serializer.serialize_str("Completed"),
-            Self::AwaitingUserFeedback => serializer.serialize_str("AwaitingUserFeedback"),
-            Self::Paused => serializer.serialize_str("Paused"),
-            Self::Failed => serializer.serialize_str("Failed"),
-            Self::Unknown(s) => serializer.serialize_str(s),
-        }
+        serializer.serialize_str(self.as_str())
     }
 }
 

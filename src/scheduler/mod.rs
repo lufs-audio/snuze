@@ -4,7 +4,7 @@ pub mod heap;
 use crate::jules::JulesAdapter;
 use crate::kernel::duration::format_duration;
 use crate::kernel::{
-    Alarm, DeliveryMode, JulesSessionState, JulesState, TemplateVars, Trigger,
+    Alarm, DeliveryMode, JulesSessionState, TemplateVars, Trigger,
 };
 use crate::scheduler::heap::AlarmHeap;
 use std::collections::HashSet;
@@ -307,6 +307,15 @@ impl Scheduler {
         }
 
         match check_result {
+            Err(crate::kernel::SnuzeError::JulesCredentialMissing) => {
+                if self.finish_in_flight(&alarm.id) {
+                    return;
+                }
+                (self.on_event)(FiredEvent::Failed {
+                    id: alarm.id,
+                    reason: crate::kernel::SnuzeError::JulesCredentialMissing.to_string(),
+                });
+            }
             Err(_) => {
                 if self.finish_in_flight(&alarm.id) {
                     return;
@@ -322,50 +331,7 @@ impl Scheduler {
             }
             Ok(states) => {
                 if condition.is_satisfied(&states) {
-                    let dur = now.duration_since(alarm.created_at).unwrap_or_default();
-                    let dur_str = format_duration(dur);
-
-                    let (session_id_str, status_str, pr_urls_str) =
-                        crate::kernel::format_jules_template_vars(&states);
-                    let pr_urls_val = if pr_urls_str.is_empty() {
-                        None
-                    } else {
-                        Some(pr_urls_str)
-                    };
-
-                    let vars = TemplateVars {
-                        duration: Some(dur_str),
-                        session_id: Some(session_id_str),
-                        status: Some(status_str),
-                        pr_urls: pr_urls_val,
-                    };
-
-                    let mut delivered_alarm = alarm.clone();
-                    match &mut delivered_alarm.delivery {
-                        DeliveryMode::Prompt { text }
-                        | DeliveryMode::Command { text } => {
-                            *text = crate::kernel::interpolate(text, &vars);
-                        }
-                    }
-
-                    let outcome = self.adapter.deliver(&delivered_alarm);
-                    if self.finish_in_flight(&alarm.id) {
-                        return;
-                    }
-                    let event = match outcome {
-                        DeliveryOutcome::Delivered => FiredEvent::Fired {
-                            id: alarm.id,
-                            at: now,
-                        },
-                        DeliveryOutcome::AgentBlocked(reason)
-                        | DeliveryOutcome::PromptStalled(reason)
-                        | DeliveryOutcome::PaneGone(reason)
-                        | DeliveryOutcome::HerdrUnavailable(reason) => FiredEvent::Failed {
-                            id: alarm.id,
-                            reason,
-                        },
-                    };
-                    (self.on_event)(event);
+                    self.deliver_jules_alarm(alarm, now, &states);
                 } else {
                     if self.finish_in_flight(&alarm.id) {
                         return;
@@ -381,6 +347,52 @@ impl Scheduler {
                 }
             }
         }
+    }
+
+    fn deliver_jules_alarm(&self, alarm: Alarm, now: SystemTime, states: &[JulesSessionState]) {
+        let dur = now.duration_since(alarm.created_at).unwrap_or_default();
+        let dur_str = format_duration(dur);
+
+        let (session_id_str, status_str, pr_urls_str) =
+            crate::kernel::format_jules_template_vars(states);
+        let pr_urls_val = if pr_urls_str.is_empty() {
+            None
+        } else {
+            Some(pr_urls_str)
+        };
+
+        let vars = TemplateVars {
+            duration: Some(dur_str),
+            session_id: Some(session_id_str),
+            status: Some(status_str),
+            pr_urls: pr_urls_val,
+        };
+
+        let mut delivered_alarm = alarm.clone();
+        match &mut delivered_alarm.delivery {
+            DeliveryMode::Prompt { text } | DeliveryMode::Command { text } => {
+                *text = crate::kernel::interpolate(text, &vars);
+            }
+        }
+
+        let outcome = self.adapter.deliver(&delivered_alarm);
+        if self.finish_in_flight(&alarm.id) {
+            return;
+        }
+        let event = match outcome {
+            DeliveryOutcome::Delivered => FiredEvent::Fired {
+                id: alarm.id,
+                at: now,
+            },
+            DeliveryOutcome::AgentBlocked(reason)
+            | DeliveryOutcome::PromptStalled(reason)
+            | DeliveryOutcome::PaneGone(reason)
+            | DeliveryOutcome::HerdrUnavailable(reason) => FiredEvent::Failed {
+                id: alarm.id,
+                reason,
+            },
+        };
+        (self.on_event)(event);
     }
 
     /// Emits a `Progress` event and re-pushes the alarm onto the heap with an updated
@@ -417,9 +429,4 @@ impl Scheduler {
             state.heap.push(mut_alarm);
         }
     }
-}
-
-#[allow(dead_code)]
-fn format_jules_state_str(state: &JulesState) -> String {
-    state.as_str().to_string()
 }

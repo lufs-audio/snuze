@@ -3,7 +3,7 @@ use crate::kernel::{JulesSessionState, JulesState, SnuzeError};
 use serde::Deserialize;
 use std::time::Duration;
 
-const MAX_REASON_LEN: usize = 100;
+const MAX_REASON_LEN: usize = 256;
 
 /// Production adapter that queries the Google Jules v1alpha REST API.
 pub struct RealJulesAdapter {
@@ -106,9 +106,7 @@ impl JulesAdapter for RealJulesAdapter {
                     return Err(SnuzeError::JulesCredentialMissing);
                 }
                 Err(ureq::Error::Status(404, _)) => {
-                    return Err(SnuzeError::DaemonUnavailable(format!(
-                        "session '{session_id}' not found"
-                    )));
+                    return Err(SnuzeError::JulesSessionNotFound(session_id.clone()));
                 }
                 Err(ureq::Error::Status(429, _)) => {
                     return Err(SnuzeError::DaemonUnavailable("rate limited".to_string()));
