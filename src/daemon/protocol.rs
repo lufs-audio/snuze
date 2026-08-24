@@ -10,6 +10,7 @@ pub enum Request {
     ListAlarms(Option<AlarmStatus>),
     GetAlarm(String),
     CancelAlarm(String),
+    SignalAlarm { match_key: String },
     Shutdown,
     Ping,
 }
@@ -23,6 +24,7 @@ pub enum Response {
     Alarm(Alarm),
     AlarmList(Vec<Alarm>),
     CancelResult(bool),
+    SignalResult(Vec<String>),
     NotFound(String),
     Error(String),
 }
