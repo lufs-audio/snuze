@@ -2,10 +2,11 @@
 #![allow(clippy::expect_used)]
 #![allow(clippy::indexing_slicing)]
 #![allow(clippy::panic)]
+#![allow(clippy::duration_suboptimal_units)]
+#![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::too_many_lines)]
 #![allow(clippy::similar_names)]
 #![allow(clippy::type_complexity)]
-#![allow(clippy::duration_suboptimal_units)]
 #![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::match_wildcard_for_single_variants)]
 
@@ -205,6 +206,151 @@ fn test_scheduler_signal_herdr_status_fires_on_match_and_updates_on_non_match() 
         }
         other => panic!("expected FiredEvent::Fired, got {other:?}"),
     }
+}
+
+#[test]
+fn test_scheduler_signal_herdr_status_broadcast() {
+    let base_time = UNIX_EPOCH + Duration::from_secs(20_000);
+    let clock = FakeClock::new(base_time);
+    let herdr = MockHerdrAdapter::new();
+    let events = Arc::new(Mutex::new(Vec::new()));
+
+    let scheduler = setup_scheduler(clock.clone(), herdr.clone(), Arc::clone(&events));
+
+    let timeout_at = base_time + Duration::from_secs(600);
+    let alarm1 = create_herdr_alarm(
+        "alarm-h1",
+        "w1:p1",
+        "w3:p1",
+        vec![HerdrWatchStatus::Done, HerdrWatchStatus::Idle],
+        base_time,
+        timeout_at,
+        "Notify pane 1",
+    );
+    let alarm2 = create_herdr_alarm(
+        "alarm-h2",
+        "w1:p2",
+        "w3:p1",
+        vec![HerdrWatchStatus::Done],
+        base_time,
+        timeout_at,
+        "Notify pane 2",
+    );
+
+    scheduler.arm(alarm1);
+    scheduler.arm(alarm2);
+
+    let mut resolved = scheduler.signal(PushSignal::HerdrPaneEvent {
+        pane_id: "w3:p1".to_string(),
+        new_status: HerdrWatchStatus::Done,
+    });
+    resolved.sort();
+
+    assert_eq!(resolved, vec!["alarm-h1".to_string(), "alarm-h2".to_string()]);
+    assert_eq!(herdr.delivered_count(), 2);
+    assert_eq!(events.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn test_scheduler_signal_different_pane_ignored() {
+    let base_time = UNIX_EPOCH + Duration::from_secs(30_000);
+    let clock = FakeClock::new(base_time);
+    let herdr = MockHerdrAdapter::new();
+    let events = Arc::new(Mutex::new(Vec::new()));
+
+    let scheduler = setup_scheduler(clock.clone(), herdr.clone(), Arc::clone(&events));
+
+    let timeout_at = base_time + Duration::from_secs(600);
+    let alarm = create_herdr_alarm(
+        "alarm-pane-a",
+        "w1:p1",
+        "pane-A",
+        vec![HerdrWatchStatus::Done],
+        base_time,
+        timeout_at,
+        "Notify",
+    );
+    scheduler.arm(alarm);
+
+    let resolved = scheduler.signal(PushSignal::HerdrPaneEvent {
+        pane_id: "pane-B".to_string(),
+        new_status: HerdrWatchStatus::Done,
+    });
+    assert!(resolved.is_empty());
+    assert_eq!(herdr.delivered_count(), 0);
+    assert_eq!(events.lock().unwrap().len(), 0);
+}
+
+#[test]
+fn test_scheduler_herdr_status_timeout_via_heap_pop() {
+    let base_time = UNIX_EPOCH + Duration::from_secs(40_000);
+    let clock = FakeClock::new(base_time);
+    let herdr = MockHerdrAdapter::new();
+    let events = Arc::new(Mutex::new(Vec::new()));
+
+    let scheduler = setup_scheduler(clock.clone(), herdr.clone(), Arc::clone(&events));
+
+    let timeout_at = base_time + Duration::from_secs(60);
+    let alarm = create_herdr_alarm(
+        "alarm-h-timeout",
+        "w1:p1",
+        "w2:p2",
+        vec![HerdrWatchStatus::Done],
+        base_time,
+        timeout_at,
+        "Never delivered",
+    );
+    scheduler.arm(alarm);
+
+    // Advance clock past timeout
+    clock.advance(Duration::from_secs(61));
+
+    // Wait briefly for the background thread to pop and process the timeout
+    std::thread::sleep(Duration::from_millis(50));
+
+    let evs = events.lock().unwrap();
+    assert_eq!(evs.len(), 1);
+    match &evs[0] {
+        FiredEvent::Failed { id, reason } => {
+            assert_eq!(id, "alarm-h-timeout");
+            assert_eq!(reason, "timeout");
+        }
+        other => panic!("expected Failed(timeout), got {other:?}"),
+    }
+    assert_eq!(herdr.delivered_count(), 0);
+}
+
+#[test]
+fn test_arm_herdr_status_past_timeout_fails_immediately() {
+    let base_time = UNIX_EPOCH + Duration::from_secs(50_000);
+    let clock = FakeClock::new(base_time);
+    let herdr = MockHerdrAdapter::new();
+    let events = Arc::new(Mutex::new(Vec::new()));
+
+    let scheduler = setup_scheduler(clock.clone(), herdr.clone(), Arc::clone(&events));
+
+    let past_timeout = base_time - Duration::from_secs(10);
+    let alarm = create_herdr_alarm(
+        "alarm-h-past-timeout",
+        "w1:p1",
+        "w2:p2",
+        vec![HerdrWatchStatus::Done],
+        base_time - Duration::from_secs(100),
+        past_timeout,
+        "Already timed out",
+    );
+    scheduler.arm(alarm);
+
+    let evs = events.lock().unwrap();
+    assert_eq!(evs.len(), 1);
+    match &evs[0] {
+        FiredEvent::Failed { id, reason } => {
+            assert_eq!(id, "alarm-h-past-timeout");
+            assert_eq!(reason, "timeout");
+        }
+        other => panic!("expected Failed(timeout), got {other:?}"),
+    }
+    assert_eq!(herdr.delivered_count(), 0);
 }
 
 #[test]

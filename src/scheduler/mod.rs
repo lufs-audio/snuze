@@ -117,8 +117,8 @@ impl Scheduler {
         }
     }
 
-    /// Arms an alarm. For `Deadline`, checks the grace window; for `JulesCondition`, checks `timeout_at`.
-    pub fn arm(&self, alarm: Alarm) {
+    /// Arms an alarm. For `Deadline`, checks the grace window; for `JulesCondition` and `HerdrStatus`, checks `timeout_at`.
+    pub fn arm(&self, mut alarm: Alarm) {
         let now = self.clock.now();
         match &alarm.trigger {
             Trigger::Deadline => {
@@ -129,8 +129,16 @@ impl Scheduler {
                     }
                 }
             }
-            Trigger::JulesCondition { timeout_at, .. }
-            | Trigger::HerdrStatus { timeout_at, .. }
+            Trigger::JulesCondition { timeout_at, .. } => {
+                if now >= *timeout_at {
+                    (self.on_event)(FiredEvent::Failed {
+                        id: alarm.id,
+                        reason: "timeout".to_string(),
+                    });
+                    return;
+                }
+            }
+            Trigger::HerdrStatus { timeout_at, .. }
             | Trigger::ExternalSignal { timeout_at, .. } => {
                 if now >= *timeout_at {
                     (self.on_event)(FiredEvent::Failed {
@@ -139,6 +147,7 @@ impl Scheduler {
                     });
                     return;
                 }
+                alarm.deadline = *timeout_at;
             }
         }
 
@@ -217,54 +226,13 @@ impl Scheduler {
         }
 
         for alarm in to_deliver {
-            self.deliver_and_fire(alarm, now);
+            self.deliver_signal_alarm(alarm, now);
         }
 
         resolved_ids
     }
 
-    /// Interpolates template variables and delivers the alarm, emitting terminal events.
-    fn deliver_and_fire(&self, alarm: Alarm, now: SystemTime) {
-        if self.is_canceled(&alarm.id) {
-            self.finish_in_flight(&alarm.id);
-            return;
-        }
-
-        let dur = now.duration_since(alarm.created_at).unwrap_or_default();
-        let dur_str = format_duration(dur);
-        let vars = TemplateVars {
-            duration: Some(dur_str),
-            session_id: None,
-            status: None,
-            pr_urls: None,
-        };
-        let mut delivered_alarm = alarm.clone();
-        match &mut delivered_alarm.delivery {
-            DeliveryMode::Prompt { text } | DeliveryMode::Command { text } => {
-                *text = crate::kernel::interpolate(text, &vars);
-            }
-        }
-
-        let outcome = self.adapter.deliver(&delivered_alarm);
-        if self.finish_in_flight(&alarm.id) {
-            return;
-        }
-
-        let event = match outcome {
-            DeliveryOutcome::Delivered => FiredEvent::Fired {
-                id: alarm.id,
-                at: now,
-            },
-            DeliveryOutcome::AgentBlocked(reason)
-            | DeliveryOutcome::PromptStalled(reason)
-            | DeliveryOutcome::PaneGone(reason)
-            | DeliveryOutcome::HerdrUnavailable(reason) => FiredEvent::Failed {
-                id: alarm.id,
-                reason,
-            },
-        };
-        (self.on_event)(event);
-    }
+    /// Cancels a pending alarm by ID. Returns `true` if it was found and removed or marked canceled.
     #[must_use]
     pub fn cancel(&self, id: &str) -> bool {
         let mut state = match self.state.lock() {
@@ -352,6 +320,49 @@ impl Scheduler {
                 self.clock.wait_until(far_future);
             }
         }
+    }
+
+    /// Delivers an early push-signaled alarm (same delivery & event shape as normal pop firing).
+    fn deliver_signal_alarm(&self, alarm: Alarm, now: SystemTime) {
+        if self.is_canceled(&alarm.id) {
+            self.finish_in_flight(&alarm.id);
+            return;
+        }
+
+        let dur = now.duration_since(alarm.created_at).unwrap_or_default();
+        let dur_str = format_duration(dur);
+        let vars = TemplateVars {
+            duration: Some(dur_str),
+            session_id: None,
+            status: None,
+            pr_urls: None,
+        };
+        let mut delivered_alarm = alarm.clone();
+        match &mut delivered_alarm.delivery {
+            DeliveryMode::Prompt { text } | DeliveryMode::Command { text } => {
+                *text = crate::kernel::interpolate(text, &vars);
+            }
+        }
+
+        let outcome = self.adapter.deliver(&delivered_alarm);
+        if self.finish_in_flight(&alarm.id) {
+            return;
+        }
+
+        let event = match outcome {
+            DeliveryOutcome::Delivered => FiredEvent::Fired {
+                id: alarm.id,
+                at: now,
+            },
+            DeliveryOutcome::AgentBlocked(reason)
+            | DeliveryOutcome::PromptStalled(reason)
+            | DeliveryOutcome::PaneGone(reason)
+            | DeliveryOutcome::HerdrUnavailable(reason) => FiredEvent::Failed {
+                id: alarm.id,
+                reason,
+            },
+        };
+        (self.on_event)(event);
     }
 
     /// Processes a `Trigger::Deadline` alarm: checks grace window, interpolates

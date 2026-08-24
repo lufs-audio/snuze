@@ -112,6 +112,13 @@ impl Daemon {
             scheduler_clone.run();
         });
 
+        // Spawn dedicated Herdr event listener thread
+        if let Ok(listener) = crate::herdr::HerdrEventListener::new(Arc::clone(&scheduler)) {
+            std::thread::spawn(move || {
+                listener.run();
+            });
+        }
+
         // Main IPC server loop
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else {
