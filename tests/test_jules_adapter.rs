@@ -11,6 +11,7 @@ use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
@@ -53,8 +54,11 @@ fn start_mock_server(
     url
 }
 
+static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
 #[test]
 fn test_real_jules_adapter_new_missing_or_empty_key() {
+    let _guard = ENV_MUTEX.lock().unwrap();
     env::remove_var("JULES_API_KEY");
     let result = RealJulesAdapter::new();
     assert!(matches!(result, Err(SnuzeError::JulesCredentialMissing)));
@@ -68,6 +72,7 @@ fn test_real_jules_adapter_new_missing_or_empty_key() {
 
 #[test]
 fn test_real_jules_adapter_new_with_valid_key() {
+    let _guard = ENV_MUTEX.lock().unwrap();
     env::set_var("JULES_API_KEY", "test-valid-key-12345");
     let result = RealJulesAdapter::new();
     assert!(result.is_ok());

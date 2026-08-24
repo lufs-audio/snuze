@@ -7,6 +7,7 @@ use crate::kernel::{
     Alarm, DeliveryMode, JulesSessionState, JulesState, TemplateVars, Trigger,
 };
 use crate::scheduler::heap::AlarmHeap;
+use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
@@ -66,9 +67,16 @@ pub enum FiredEvent {
     },
 }
 
+#[derive(Default)]
+struct SchedulerState {
+    heap: AlarmHeap,
+    in_flight: HashSet<String>,
+    canceled: HashSet<String>,
+}
+
 /// In-memory scheduling engine that triggers alarm delivery at deadlines.
 pub struct Scheduler {
-    heap: Mutex<AlarmHeap>,
+    state: Mutex<SchedulerState>,
     adapter: Box<dyn HerdrAdapter>,
     jules_adapter: Box<dyn JulesAdapter>,
     clock: Box<dyn Clock>,
@@ -87,7 +95,7 @@ impl Scheduler {
         on_event: Box<dyn Fn(FiredEvent) + Send + Sync>,
     ) -> Self {
         Self {
-            heap: Mutex::new(AlarmHeap::new()),
+            state: Mutex::new(SchedulerState::default()),
             adapter,
             jules_adapter,
             clock,
@@ -119,42 +127,70 @@ impl Scheduler {
             }
         }
 
-        let mut heap = match self.heap.lock() {
+        let mut state = match self.state.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
-        heap.push(alarm);
-        drop(heap);
+        state.canceled.remove(&alarm.id);
+        state.heap.push(alarm);
+        drop(state);
         self.clock.wake();
     }
 
-    /// Cancels a pending alarm by ID. Returns `true` if it was found and removed.
+    /// Cancels a pending alarm by ID. Returns `true` if it was found and removed or marked canceled.
     #[must_use]
     pub fn cancel(&self, id: &str) -> bool {
-        let mut heap = match self.heap.lock() {
+        let mut state = match self.state.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
-        let found = heap.remove(id);
-        drop(heap);
-        if found {
-            self.clock.wake();
+        let heap_found = state.heap.remove(id);
+        let in_flight_found = state.in_flight.contains(id);
+        if in_flight_found {
+            state.canceled.insert(id.to_string());
         }
-        found
+        drop(state);
+        if heap_found || in_flight_found {
+            self.clock.wake();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn is_canceled(&self, id: &str) -> bool {
+        let state = match self.state.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        state.canceled.contains(id)
+    }
+
+    fn finish_in_flight(&self, id: &str) -> bool {
+        let mut state = match self.state.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        state.in_flight.remove(id);
+        state.canceled.remove(id)
     }
 
     /// Runs the scheduler loop on the calling thread. Sleeps via condvar until the next deadline.
     pub fn run(&self) {
         loop {
             let (alarm_to_fire, wait_deadline) = {
-                let mut heap = match self.heap.lock() {
+                let mut state = match self.state.lock() {
                     Ok(g) => g,
                     Err(e) => e.into_inner(),
                 };
                 let now = self.clock.now();
-                if let Some(top) = heap.peek() {
+                if let Some(top) = state.heap.peek() {
                     if top.deadline <= now {
-                        (heap.pop(), None)
+                        let alarm = state.heap.pop();
+                        if let Some(ref a) = alarm {
+                            state.in_flight.insert(a.id.clone());
+                        }
+                        (alarm, None)
                     } else {
                         (None, Some(top.deadline))
                     }
@@ -184,9 +220,16 @@ impl Scheduler {
     /// Processes a `Trigger::Deadline` alarm: checks grace window, interpolates
     /// template tokens, delivers via Herdr adapter.
     fn process_deadline_alarm(&self, alarm: Alarm, now: SystemTime) {
+        if self.is_canceled(&alarm.id) {
+            self.finish_in_flight(&alarm.id);
+            return;
+        }
+
         if let Ok(overdue) = now.duration_since(alarm.deadline) {
             if overdue > self.grace_window {
-                (self.on_event)(FiredEvent::Missed { id: alarm.id });
+                if !self.finish_in_flight(&alarm.id) {
+                    (self.on_event)(FiredEvent::Missed { id: alarm.id });
+                }
                 return;
             }
         }
@@ -207,6 +250,11 @@ impl Scheduler {
         }
 
         let outcome = self.adapter.deliver(&delivered_alarm);
+
+        if self.finish_in_flight(&alarm.id) {
+            return;
+        }
+
         let event = match outcome {
             DeliveryOutcome::Delivered => FiredEvent::Fired {
                 id: alarm.id,
@@ -227,6 +275,11 @@ impl Scheduler {
     /// evaluates the condition, fires on satisfaction, emits `Progress` for
     /// intermediate polls, or `Failed("timeout")` when the timeout ceiling is reached.
     fn process_jules_alarm(&self, alarm: Alarm, now: SystemTime) {
+        if self.is_canceled(&alarm.id) {
+            self.finish_in_flight(&alarm.id);
+            return;
+        }
+
         let (session_ids, condition, poll_interval_secs, timeout_at) = match &alarm.trigger {
             Trigger::JulesCondition {
                 session_ids,
@@ -240,11 +293,24 @@ impl Scheduler {
                 *poll_interval_secs,
                 *timeout_at,
             ),
-            Trigger::Deadline => return,
+            Trigger::Deadline => {
+                self.finish_in_flight(&alarm.id);
+                return;
+            }
         };
 
-        match self.jules_adapter.check_sessions(&session_ids) {
+        let check_result = self.jules_adapter.check_sessions(&session_ids);
+
+        if self.is_canceled(&alarm.id) {
+            self.finish_in_flight(&alarm.id);
+            return;
+        }
+
+        match check_result {
             Err(_) => {
+                if self.finish_in_flight(&alarm.id) {
+                    return;
+                }
                 if now >= timeout_at {
                     (self.on_event)(FiredEvent::Failed {
                         id: alarm.id,
@@ -283,6 +349,9 @@ impl Scheduler {
                     }
 
                     let outcome = self.adapter.deliver(&delivered_alarm);
+                    if self.finish_in_flight(&alarm.id) {
+                        return;
+                    }
                     let event = match outcome {
                         DeliveryOutcome::Delivered => FiredEvent::Fired {
                             id: alarm.id,
@@ -297,13 +366,18 @@ impl Scheduler {
                         },
                     };
                     (self.on_event)(event);
-                } else if now >= timeout_at {
-                    (self.on_event)(FiredEvent::Failed {
-                        id: alarm.id,
-                        reason: "timeout".to_string(),
-                    });
                 } else {
-                    self.rearm_progress(&alarm, now, timeout_at, poll_interval_secs, states);
+                    if self.finish_in_flight(&alarm.id) {
+                        return;
+                    }
+                    if now >= timeout_at {
+                        (self.on_event)(FiredEvent::Failed {
+                            id: alarm.id,
+                            reason: "timeout".to_string(),
+                        });
+                    } else {
+                        self.rearm_progress(&alarm, now, timeout_at, poll_interval_secs, states);
+                    }
                 }
             }
         }
@@ -335,11 +409,13 @@ impl Scheduler {
         {
             *lk = last_known;
         }
-        let mut heap = match self.heap.lock() {
+        let mut state = match self.state.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
-        heap.push(mut_alarm);
+        if !state.canceled.contains(&alarm.id) {
+            state.heap.push(mut_alarm);
+        }
     }
 }
 
