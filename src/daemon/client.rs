@@ -119,6 +119,22 @@ impl DaemonClient {
         }
     }
 
+    /// Signals an external alarm by match key. Returns the list of resolved alarm IDs.
+    ///
+    /// # Errors
+    /// Returns `SnuzeError::DaemonUnavailable` on IPC error.
+    pub fn signal_alarm(&self, match_key: &str) -> Result<Vec<String>, SnuzeError> {
+        match self.send_request(&Request::SignalAlarm {
+            match_key: match_key.to_string(),
+        })? {
+            Response::SignalResult(ids) => Ok(ids),
+            Response::Error(msg) => Err(SnuzeError::PersistFailed(msg)),
+            _ => Err(SnuzeError::DaemonUnavailable(
+                "unexpected daemon response for signal_alarm".to_string(),
+            )),
+        }
+    }
+
     /// Health check ping to verify daemon responsiveness.
     ///
     /// # Errors

@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::panic)]
+#![allow(clippy::too_many_lines)]
 
 use clap::Parser;
 use snuze::cli::args::{Cli, Command, SetArgs};
@@ -213,6 +214,9 @@ fn test_set_jules_validation_errors() {
     let args = SetArgs {
         after: None,
         jules: Some("sess-1".to_string()),
+        signal: None,
+        herdr_pane: None,
+        watch_for: None,
         condition: None,
         timeout: Some("10m".to_string()),
         poll_interval: None,
@@ -230,6 +234,9 @@ fn test_set_jules_validation_errors() {
     let args = SetArgs {
         after: None,
         jules: Some("sess-1".to_string()),
+        signal: None,
+        herdr_pane: None,
+        watch_for: None,
         condition: Some("all-terminal".to_string()),
         timeout: None,
         poll_interval: None,
@@ -247,6 +254,9 @@ fn test_set_jules_validation_errors() {
     let args = SetArgs {
         after: None,
         jules: Some("sess-1".to_string()),
+        signal: None,
+        herdr_pane: None,
+        watch_for: None,
         condition: Some("all-terminal".to_string()),
         timeout: Some("10m".to_string()),
         poll_interval: None,
@@ -264,6 +274,9 @@ fn test_set_jules_validation_errors() {
     let args = SetArgs {
         after: Some("10s".to_string()),
         jules: Some("sess-1".to_string()),
+        signal: None,
+        herdr_pane: None,
+        watch_for: None,
         condition: Some("all-terminal".to_string()),
         timeout: Some("10m".to_string()),
         poll_interval: None,
@@ -281,6 +294,9 @@ fn test_set_jules_validation_errors() {
     let args = SetArgs {
         after: None,
         jules: Some("sess-1,".to_string()),
+        signal: None,
+        herdr_pane: None,
+        watch_for: None,
         condition: Some("all-terminal".to_string()),
         timeout: Some("10m".to_string()),
         poll_interval: None,
@@ -298,7 +314,152 @@ fn test_set_jules_validation_errors() {
     let args = SetArgs {
         after: None,
         jules: Some("sess-1".to_string()),
+        signal: None,
+        herdr_pane: None,
+        watch_for: None,
         condition: Some("invalid-condition".to_string()),
+        timeout: Some("10m".to_string()),
+        poll_interval: None,
+        pane: "w1:p1".to_string(),
+        prompt: Some("Wake".to_string()),
+        command: None,
+        label: None,
+        dry_run: true,
+        json: false,
+    };
+    let err = handle_set(args, state_dir).unwrap_err();
+    assert_eq!(ExitCode::from(&err), ExitCode::Usage);
+}
+
+#[test]
+fn test_signal_args_parsing() {
+    let args = ["snuze", "signal", "deploy-complete", "--dry-run", "--json"];
+    let cli = Cli::try_parse_from(args).unwrap();
+    if let Command::Signal(sig) = cli.command {
+        assert_eq!(sig.match_key, "deploy-complete");
+        assert!(sig.dry_run);
+        assert!(sig.json);
+    } else {
+        panic!("Expected Signal command");
+    }
+}
+
+#[test]
+fn test_set_args_signal_and_herdr_validation_errors() {
+    use snuze::cli::handlers::handle_set;
+    use snuze::kernel::ExitCode;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let state_dir = temp_dir.path();
+
+    // 1. --signal with --jules (conflict)
+    let args = SetArgs {
+        after: None,
+        jules: Some("sess-1".to_string()),
+        signal: Some("my_key".to_string()),
+        herdr_pane: None,
+        watch_for: None,
+        condition: Some("all-terminal".to_string()),
+        timeout: Some("10m".to_string()),
+        poll_interval: None,
+        pane: "w1:p1".to_string(),
+        prompt: Some("Wake".to_string()),
+        command: None,
+        label: None,
+        dry_run: true,
+        json: false,
+    };
+    let err = handle_set(args, state_dir).unwrap_err();
+    assert_eq!(ExitCode::from(&err), ExitCode::Usage);
+
+    // 2. --signal without --timeout
+    let args = SetArgs {
+        after: None,
+        jules: None,
+        signal: Some("my_key".to_string()),
+        herdr_pane: None,
+        watch_for: None,
+        condition: None,
+        timeout: None,
+        poll_interval: None,
+        pane: "w1:p1".to_string(),
+        prompt: Some("Wake".to_string()),
+        command: None,
+        label: None,
+        dry_run: true,
+        json: false,
+    };
+    let err = handle_set(args, state_dir).unwrap_err();
+    assert_eq!(ExitCode::from(&err), ExitCode::Usage);
+
+    // 3. --herdr-pane without --watch-for
+    let args = SetArgs {
+        after: None,
+        jules: None,
+        signal: None,
+        herdr_pane: Some("w1:p2".to_string()),
+        watch_for: None,
+        condition: None,
+        timeout: Some("10m".to_string()),
+        poll_interval: None,
+        pane: "w1:p1".to_string(),
+        prompt: Some("Wake".to_string()),
+        command: None,
+        label: None,
+        dry_run: true,
+        json: false,
+    };
+    let err = handle_set(args, state_dir).unwrap_err();
+    assert_eq!(ExitCode::from(&err), ExitCode::Usage);
+
+    // 4. --herdr-pane without --timeout
+    let args = SetArgs {
+        after: None,
+        jules: None,
+        signal: None,
+        herdr_pane: Some("w1:p2".to_string()),
+        watch_for: Some("idle,done".to_string()),
+        condition: None,
+        timeout: None,
+        poll_interval: None,
+        pane: "w1:p1".to_string(),
+        prompt: Some("Wake".to_string()),
+        command: None,
+        label: None,
+        dry_run: true,
+        json: false,
+    };
+    let err = handle_set(args, state_dir).unwrap_err();
+    assert_eq!(ExitCode::from(&err), ExitCode::Usage);
+
+    // 5. --herdr-pane with invalid --watch-for status
+    let args = SetArgs {
+        after: None,
+        jules: None,
+        signal: None,
+        herdr_pane: Some("w1:p2".to_string()),
+        watch_for: Some("idle,unknown_status".to_string()),
+        condition: None,
+        timeout: Some("10m".to_string()),
+        poll_interval: None,
+        pane: "w1:p1".to_string(),
+        prompt: Some("Wake".to_string()),
+        command: None,
+        label: None,
+        dry_run: true,
+        json: false,
+    };
+    let err = handle_set(args, state_dir).unwrap_err();
+    assert_eq!(ExitCode::from(&err), ExitCode::Usage);
+
+    // 6. --herdr-pane with empty status in list
+    let args = SetArgs {
+        after: None,
+        jules: None,
+        signal: None,
+        herdr_pane: Some("w1:p2".to_string()),
+        watch_for: Some("idle,".to_string()),
+        condition: None,
         timeout: Some("10m".to_string()),
         poll_interval: None,
         pane: "w1:p1".to_string(),

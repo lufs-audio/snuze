@@ -19,6 +19,7 @@ fn main() {
             snuze::cli::args::EventsAction::Drain { json } => *json,
         },
         Command::Doctor(args) => args.json,
+        Command::Signal(args) => args.json,
     };
 
     let result = dispatch(cli.command, &state_dir);

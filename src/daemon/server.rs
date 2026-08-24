@@ -124,6 +124,13 @@ impl Daemon {
             scheduler_clone.run();
         });
 
+        // Spawn dedicated Herdr event listener thread
+        if let Ok(listener) = crate::herdr::HerdrEventListener::new(Arc::clone(&scheduler)) {
+            std::thread::spawn(move || {
+                listener.run();
+            });
+        }
+
         // Main IPC server loop
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else {
@@ -227,6 +234,15 @@ impl Daemon {
                         }
 
                         let resp = Response::CancelResult(found);
+                        if let Ok(resp_json) = serde_json::to_string(&resp) {
+                            let _ = writeln!(stream, "{resp_json}");
+                        }
+                    }
+                    Request::SignalAlarm { match_key } => {
+                        let resolved_ids = scheduler.signal(crate::scheduler::PushSignal::ExternalSignal {
+                            match_key,
+                        });
+                        let resp = Response::SignalResult(resolved_ids);
                         if let Ok(resp_json) = serde_json::to_string(&resp) {
                             let _ = writeln!(stream, "{resp_json}");
                         }

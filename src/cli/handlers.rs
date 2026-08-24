@@ -1,9 +1,10 @@
 use crate::cli::args::{
     CancelArgs, DaemonAction, DaemonArgs, DoctorArgs, EventsAction, EventsArgs, ListArgs, SetArgs,
-    StatusArgs,
+    SignalArgs, StatusArgs,
 };
 use crate::cli::jules_parse::{parse_jules_condition, parse_jules_session_ids};
 use crate::cli::output::CliResult;
+use crate::cli::watch_parse::parse_watch_statuses;
 use crate::daemon::{Daemon, DaemonClient};
 use crate::herdr::RealHerdrAdapter;
 use crate::jules::adapter::RealJulesAdapter;
@@ -31,10 +32,46 @@ fn format_alarm_human(alarm: &Alarm) -> String {
 
     let mut status_str = format!("{:?}", alarm.status);
     if alarm.status == AlarmStatus::Pending {
-        if let Trigger::JulesCondition { last_known, .. } = &alarm.trigger {
-            for s in last_known {
-                let _ = write!(status_str, "\n  {}: {}", s.session_id, s.state.as_str());
+        match &alarm.trigger {
+            Trigger::JulesCondition { last_known, .. } => {
+                for s in last_known {
+                    let _ = write!(status_str, "\n  {}: {}", s.session_id, s.state.as_str());
+                }
             }
+            Trigger::HerdrStatus {
+                watched_pane_id,
+                watch_for,
+                last_known,
+                ..
+            } => {
+                let watch_str = watch_for
+                    .iter()
+                    .map(|s| {
+                        serde_json::to_string(s)
+                            .unwrap_or_default()
+                            .trim_matches('"')
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let last_known_str = last_known.map_or_else(
+                    || "none".to_string(),
+                    |s| {
+                        serde_json::to_string(&s)
+                            .unwrap_or_default()
+                            .trim_matches('"')
+                            .to_string()
+                    },
+                );
+                let _ = write!(
+                    status_str,
+                    "\n  watching {watched_pane_id} for [{watch_str}] (last: {last_known_str})"
+                );
+            }
+            Trigger::ExternalSignal { match_key, .. } => {
+                let _ = write!(status_str, "\n  waiting for signal '{match_key}'");
+            }
+            Trigger::Deadline => {}
         }
     }
 
@@ -58,11 +95,18 @@ fn format_alarm_human(alarm: &Alarm) -> String {
 pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
     let is_after = args.after.is_some();
     let is_jules = args.jules.is_some();
+    let is_signal = args.signal.is_some();
+    let is_herdr_pane = args.herdr_pane.is_some();
 
-    // 1. Exactly one of --after or --jules must be present
-    if is_after == is_jules {
+    // 1. Exactly one trigger mode must be present
+    let mode_count = [is_after, is_jules, is_signal, is_herdr_pane]
+        .into_iter()
+        .filter(|&x| x)
+        .count();
+
+    if mode_count != 1 {
         return Err(SnuzeError::ConflictingFlags(
-            "exactly one of --after or --jules is required".to_string(),
+            "exactly one of --after, --jules, --signal, or --herdr-pane is required".to_string(),
         ));
     }
 
@@ -86,7 +130,7 @@ pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
         ));
     }
 
-    // 3. If --jules, --condition and --timeout are both required
+    // 3. Required flags per mode
     if is_jules {
         if args.condition.is_none() {
             return Err(SnuzeError::ConflictingFlags(
@@ -98,12 +142,39 @@ pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
                 "--timeout is required with --jules".to_string(),
             ));
         }
+    } else if is_signal {
+        if args.timeout.is_none() {
+            return Err(SnuzeError::ConflictingFlags(
+                "--timeout is required with --signal".to_string(),
+            ));
+        }
+    } else if is_herdr_pane {
+        if args.watch_for.is_none() {
+            return Err(SnuzeError::ConflictingFlags(
+                "--watch-for is required with --herdr-pane; valid options are: idle, done, blocked, working".to_string(),
+            ));
+        }
+        if args.timeout.is_none() {
+            return Err(SnuzeError::ConflictingFlags(
+                "--timeout is required with --herdr-pane".to_string(),
+            ));
+        }
     }
 
-    // 4. Parse --condition if given
+    // 4. Parse mode-specific sub-options
     let parsed_condition = if is_jules {
         if let Some(ref cond_str) = args.condition {
             Some(parse_jules_condition(cond_str)?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let parsed_watch_statuses = if is_herdr_pane {
+        if let Some(ref watch_str) = args.watch_for {
+            Some(parse_watch_statuses(watch_str)?)
         } else {
             None
         }
@@ -121,6 +192,10 @@ pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
             std::time::Duration::from_secs(30)
         };
         (None, Some(timeout_dur), Some(poll_interval_dur))
+    } else if is_signal || is_herdr_pane {
+        let timeout_str = args.timeout.as_deref().unwrap_or_default();
+        let timeout_dur = parse_duration(timeout_str)?;
+        (None, Some(timeout_dur), None)
     } else {
         let after_str = args.after.as_deref().unwrap_or_default();
         let after_dur = parse_duration(after_str)?;
@@ -135,8 +210,16 @@ pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
         None
     };
 
-    // Pre-flight pane check
+    // Pre-flight watched pane check
     let adapter = RealHerdrAdapter::new()?;
+    if is_herdr_pane {
+        let watched_pane_id = args.herdr_pane.as_deref().unwrap_or_default();
+        if !adapter.pane_exists(watched_pane_id)? {
+            return Err(SnuzeError::WatchedPaneNotFound(watched_pane_id.to_string()));
+        }
+    }
+
+    // Pre-flight delivery pane check
     if !adapter.pane_exists(&args.pane)? {
         return Err(SnuzeError::PaneNotFound(args.pane));
     }
@@ -175,6 +258,24 @@ pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
             last_known: Vec::new(),
         };
         (next_check, trigger, 2)
+    } else if is_signal {
+        let timeout_dur = timeout_duration.unwrap_or(std::time::Duration::from_mins(5));
+        let timeout_at = now + timeout_dur;
+        let trigger = Trigger::ExternalSignal {
+            match_key: args.signal.unwrap_or_default(),
+            timeout_at,
+        };
+        (timeout_at, trigger, 3)
+    } else if is_herdr_pane {
+        let timeout_dur = timeout_duration.unwrap_or(std::time::Duration::from_mins(5));
+        let timeout_at = now + timeout_dur;
+        let trigger = Trigger::HerdrStatus {
+            watched_pane_id: args.herdr_pane.unwrap_or_default(),
+            watch_for: parsed_watch_statuses.unwrap_or_default(),
+            timeout_at,
+            last_known: None,
+        };
+        (timeout_at, trigger, 3)
     } else {
         let dur = after_duration.unwrap_or(std::time::Duration::from_secs(0));
         (now + dur, Trigger::Deadline, 1)
@@ -211,6 +312,53 @@ pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
         Ok(serde_json::to_value(&alarm).unwrap_or(serde_json::Value::Null))
     } else {
         Ok(serde_json::Value::String(alarm.id))
+    }
+}
+
+/// Handles signaling an external alarm.
+///
+/// # Errors
+/// Returns `SnuzeError` if daemon is unreachable.
+pub fn handle_signal(args: &SignalArgs, state_dir: &Path) -> CliResult {
+    if args.dry_run {
+        let client = DaemonClient::connect(state_dir)?;
+        let pending = client.list_alarms(Some(AlarmStatus::Pending))?;
+        let mut matched_alarms = Vec::new();
+        for alarm in pending {
+            if let Trigger::ExternalSignal { match_key, .. } = &alarm.trigger {
+                if match_key == &args.match_key {
+                    matched_alarms.push(alarm.id);
+                }
+            }
+        }
+        if args.json {
+            Ok(serde_json::json!({
+                "matched": matched_alarms.len(),
+                "alarm_ids": matched_alarms
+            }))
+        } else {
+            Ok(serde_json::Value::String(format!(
+                "Would signal {} alarms: {:?}",
+                matched_alarms.len(),
+                matched_alarms
+            )))
+        }
+    } else {
+        Daemon::ensure_running(state_dir)?;
+        let client = DaemonClient::connect(state_dir)?;
+        let matched_alarms = client.signal_alarm(&args.match_key)?;
+        if args.json {
+            Ok(serde_json::json!({
+                "matched": matched_alarms.len(),
+                "alarm_ids": matched_alarms
+            }))
+        } else {
+            Ok(serde_json::Value::String(format!(
+                "Signaled {} alarms: {:?}",
+                matched_alarms.len(),
+                matched_alarms
+            )))
+        }
     }
 }
 

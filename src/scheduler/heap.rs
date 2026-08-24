@@ -64,6 +64,36 @@ impl AlarmHeap {
         self.heap.len() < old_len
     }
 
+    /// Extracts matching alarms based on a predicate, leaving non-matching alarms in the heap.
+    pub fn extract_matching<F>(&mut self, mut predicate: F) -> Vec<Alarm>
+    where
+        F: FnMut(&mut Alarm) -> bool,
+    {
+        let mut extracted = Vec::new();
+        let mut kept = Vec::new();
+        for mut entry in self.heap.drain() {
+            if predicate(&mut entry.alarm) {
+                extracted.push(entry.alarm);
+            } else {
+                kept.push(entry);
+            }
+        }
+        self.heap = kept.into();
+        extracted
+    }
+
+    /// Mutates alarms matching a predicate in place without changing heap ordering.
+    pub fn update_matching<F>(&mut self, mut updater: F)
+    where
+        F: FnMut(&mut Alarm),
+    {
+        let mut entries: Vec<HeapEntry> = self.heap.drain().collect();
+        for entry in &mut entries {
+            updater(&mut entry.alarm);
+        }
+        self.heap = entries.into();
+    }
+
     /// Returns the number of alarms in the heap.
     #[must_use]
     pub fn len(&self) -> usize {

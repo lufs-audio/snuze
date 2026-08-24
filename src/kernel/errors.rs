@@ -7,6 +7,8 @@ pub enum SnuzeError {
     ConflictingFlags(String),
     #[error("herdr pane not found: {0}")]
     PaneNotFound(String),
+    #[error("watched Herdr pane not found: {0}")]
+    WatchedPaneNotFound(String),
     #[error("Jules session not found: {0}")]
     JulesSessionNotFound(String),
     #[error("alarm not found: {0}")]
@@ -46,6 +48,7 @@ impl From<&SnuzeError> for ExitCode {
         match e {
             SnuzeError::InvalidDuration(_) | SnuzeError::ConflictingFlags(_) => ExitCode::Usage,
             SnuzeError::PaneNotFound(_)
+            | SnuzeError::WatchedPaneNotFound(_)
             | SnuzeError::JulesSessionNotFound(_)
             | SnuzeError::AlarmNotFound(_) => ExitCode::TargetUnavailable,
             SnuzeError::HerdrBinaryMissing | SnuzeError::JulesCredentialMissing => {
