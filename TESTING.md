@@ -133,3 +133,48 @@ This runbook documents manual verification procedures for scenarios requiring a 
    Missed Alarms: <N>
    Corrupt Alarms: 0
    ```
+
+---
+
+### Scenario F: Herdr Event Subscription Push Wake-up (`--herdr-pane`)
+
+1. **Schedule Watch on Sibling Pane:**
+   ```bash
+   snuze set --herdr-pane w1:p2 --watch-for done,idle --timeout 15m --pane w1:p1 --prompt "Watched pane w1:p2 transitioned to {status}!" --json
+   ```
+2. **Trigger Lifecycle Transition in Pane `w1:p2`:**
+   - Execute a task in `w1:p2` or send a command until the agent reaches `done`/`idle`.
+3. **Verify Push Resolution:**
+   - Observe immediate prompt injection in pane `w1:p1` without waiting for a poll interval.
+   - Verify `snuze status <ID>` transitions to `fired`.
+
+---
+
+### Scenario G: External Signal Dispatch (`snuze signal`)
+
+1. **Schedule Signal-Triggered Alarm:**
+   ```bash
+   snuze set --signal "deploy-complete-xyz" --timeout 1h --pane w1:p1 --prompt "Deployment xyz completed!" --json
+   ```
+2. **Simulate External Webhook / Dispatcher Signal:**
+   ```bash
+   snuze signal "deploy-complete-xyz" --json
+   # Output: {"status":"success","data":{"alarm_ids":["..."],"matched":1}}
+   ```
+3. **Verify Delivery:**
+   - Confirm delivery to `w1:p1` and terminal status `fired`.
+
+---
+
+### Scenario H: Local Event Outbox Emission & Draining (`events drain`)
+
+1. **Inspect Drained Events:**
+   ```bash
+   snuze events drain --json
+   ```
+   Confirm all terminal events (`fired`, `failed`, `canceled`, `missed`) are returned as valid JSONL entries with timestamps, hostnames, and trigger kinds.
+2. **Confirm Idempotent Drain:**
+   ```bash
+   snuze events drain --json
+   # Subsequent call returns empty array []
+   ```
