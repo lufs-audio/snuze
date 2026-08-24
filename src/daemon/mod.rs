@@ -1,5 +1,6 @@
 pub mod client;
 pub mod lock;
+pub mod outbox;
 pub mod protocol;
 pub mod server;
 
@@ -7,6 +8,7 @@ use crate::kernel::SnuzeError;
 use std::path::Path;
 
 pub use client::DaemonClient;
+pub use outbox::{EventOutbox, OutboxEvent};
 pub use server::Daemon;
 
 impl Daemon {

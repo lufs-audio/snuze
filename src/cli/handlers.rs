@@ -1,5 +1,6 @@
 use crate::cli::args::{
-    CancelArgs, DaemonAction, DaemonArgs, DoctorArgs, ListArgs, SetArgs, SignalArgs, StatusArgs,
+    CancelArgs, DaemonAction, DaemonArgs, DoctorArgs, EventsAction, EventsArgs, ListArgs, SetArgs,
+    SignalArgs, StatusArgs,
 };
 use crate::cli::jules_parse::{parse_jules_condition, parse_jules_session_ids};
 use crate::cli::output::CliResult;
@@ -637,5 +638,33 @@ pub fn handle_doctor(args: &DoctorArgs, state_dir: &Path) -> CliResult {
             }
         }
         Ok(serde_json::Value::String(output))
+    }
+}
+
+/// Handles event outbox commands.
+///
+/// # Errors
+/// Returns `SnuzeError` if daemon communication fails.
+pub fn handle_events(args: &EventsArgs, state_dir: &Path) -> CliResult {
+    match args.action {
+        EventsAction::Drain { json } => {
+            let client = DaemonClient::connect(state_dir)?;
+            let events = client.drain_events()?;
+
+            if json {
+                Ok(serde_json::to_value(&events).unwrap_or(serde_json::Value::Null))
+            } else {
+                let mut output = String::new();
+                let _ = writeln!(output, "Drained {} events", events.len());
+                for event in &events {
+                    let _ = writeln!(
+                        output,
+                        "- [{}] {} {} ({})",
+                        event.alarm_id, event.trigger_kind, event.status, event.delivery_target_pane
+                    );
+                }
+                Ok(serde_json::Value::String(output.trim_end().to_string()))
+            }
+        }
     }
 }

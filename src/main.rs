@@ -15,6 +15,9 @@ fn main() {
         Command::Status(args) => args.json,
         Command::Cancel(args) => args.json,
         Command::Daemon(args) => args.json,
+        Command::Events(args) => match &args.action {
+            snuze::cli::args::EventsAction::Drain { json } => *json,
+        },
         Command::Doctor(args) => args.json,
         Command::Signal(args) => args.json,
     };
