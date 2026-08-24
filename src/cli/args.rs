@@ -12,6 +12,7 @@ pub struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// Schedule a future wake-up alarm
     Set(SetArgs),
@@ -25,17 +26,45 @@ pub enum Command {
     Daemon(DaemonArgs),
     /// Run diagnostic health checks
     Doctor(DoctorArgs),
+    /// Signal a pending external alarm
+    Signal(SignalArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct SignalArgs {
+    /// Match key to resolve the alarm
+    pub match_key: String,
+
+    /// Validate without signaling
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Output in structured JSON format
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct SetArgs {
-    /// Duration string (e.g. 30s, 15m, 1h, 90m, 1h30m). Mutually exclusive with --jules.
+    /// Duration string (e.g. 30s, 15m, 1h, 90m, 1h30m). Mutually exclusive with --jules, --signal, --herdr-pane.
     #[arg(long)]
     pub after: Option<String>,
 
-    /// Comma-separated Jules session IDs. Mutually exclusive with --after.
+    /// Comma-separated Jules session IDs. Mutually exclusive with --after, --signal, --herdr-pane.
     #[arg(long)]
     pub jules: Option<String>,
+
+    /// External match key for signal triggering. Mutually exclusive with --after, --jules, --herdr-pane.
+    #[arg(long)]
+    pub signal: Option<String>,
+
+    /// Herdr watched pane ID. Mutually exclusive with --after, --jules, --signal.
+    #[arg(long)]
+    pub herdr_pane: Option<String>,
+
+    /// Comma-separated list of Herdr statuses to watch for (idle, done, blocked, working). Required with --herdr-pane.
+    #[arg(long)]
+    pub watch_for: Option<String>,
 
     /// Condition to trigger Jules alarm (all-terminal, any-terminal, any-completed). Required with --jules.
     #[arg(long)]

@@ -216,6 +216,15 @@ impl Daemon {
                             let _ = writeln!(stream, "{resp_json}");
                         }
                     }
+                    Request::SignalAlarm { match_key } => {
+                        let resolved_ids = scheduler.signal(crate::scheduler::PushSignal::ExternalSignal {
+                            match_key,
+                        });
+                        let resp = Response::SignalResult(resolved_ids);
+                        if let Ok(resp_json) = serde_json::to_string(&resp) {
+                            let _ = writeln!(stream, "{resp_json}");
+                        }
+                    }
                 }
             }
         }
