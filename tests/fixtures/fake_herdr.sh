@@ -3,6 +3,11 @@
 # NOTE: These tests prove error-mapping and timeout logic given known Herdr outputs;
 # they are not a substitute for the live-Herdr test suite (SPEC §9).
 
+if [ "$1" = "--version" ]; then
+    echo "herdr 0.1.0-fake"
+    exit 0
+fi
+
 case "$FAKE_HERDR_BEHAVIOR" in
     "delivered" | "success" | "pane_exists_true")
         if [ "$1" = "pane" ] && [ "$2" = "get" ]; then

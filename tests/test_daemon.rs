@@ -144,7 +144,7 @@ fn test_daemon_stale_pid_recovery() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_daemon_fault_injection_and_rearm() -> Result<(), Box<dyn std::error::Error>> {
+fn test_daemon_graceful_restart_and_rearm() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
     let state_dir = temp_dir.path().to_path_buf();
 
@@ -156,12 +156,12 @@ fn test_daemon_fault_injection_and_rearm() -> Result<(), Box<dyn std::error::Err
     let alarm = create_test_alarm();
     client.set_alarm(alarm.clone())?;
 
-    // 2. Stop daemon 1 (simulating crash/restart)
+    // 2. Stop daemon 1 (simulating graceful restart)
     Daemon::stop(&state_dir)?;
     handle1.join().unwrap()?;
     assert!(!Daemon::is_running(&state_dir));
 
-    // 3. Start daemon 2 against same state dir — verify crash-recovery re-arm on boot
+    // 3. Start daemon 2 against same state dir — verify boot-time re-arm from durable store
     let handle2 = spawn_daemon(state_dir.clone());
     assert!(wait_for_daemon(&state_dir), "daemon 2 failed to restart");
 
@@ -173,6 +173,62 @@ fn test_daemon_fault_injection_and_rearm() -> Result<(), Box<dyn std::error::Err
 
     Daemon::stop(&state_dir)?;
     handle2.join().unwrap()?;
+    Ok(())
+}
+
+#[test]
+fn test_daemon_sigkill_fault_injection_and_rearm() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempfile::tempdir()?;
+    let xdg_home = temp_dir.path().to_path_buf();
+    let state_dir = xdg_home.join("snuze");
+
+    let fake_herdr = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_herdr.sh");
+
+    // 1. Spawn daemon as a real external OS process
+    let mut child1 = std::process::Command::new(env!("CARGO_BIN_EXE_snuze"))
+        .env("XDG_STATE_HOME", &xdg_home)
+        .env("FAKE_HERDR_PATH", &fake_herdr)
+        .env("FAKE_HERDR_BEHAVIOR", "delivered")
+        .arg("daemon")
+        .arg("start")
+        .arg("--foreground")
+        .spawn()?;
+
+    assert!(wait_for_daemon(&state_dir), "daemon child process failed to start");
+
+    let client = DaemonClient::connect(&state_dir)?;
+    let alarm = create_test_alarm();
+    client.set_alarm(alarm.clone())?;
+
+    // 2. Inject uncooperative crash: send SIGKILL (Child::kill)
+    child1.kill()?;
+    let _ = child1.wait()?;
+
+    // Verify daemon process is dead but left dirty disk state (PID file remains)
+    assert!(state_dir.join("daemon.pid").exists(), "PID file should remain after SIGKILL");
+
+    // 3. Spawn replacement daemon process against the same state dir
+    let mut child2 = std::process::Command::new(env!("CARGO_BIN_EXE_snuze"))
+        .env("XDG_STATE_HOME", &xdg_home)
+        .env("FAKE_HERDR_PATH", &fake_herdr)
+        .env("FAKE_HERDR_BEHAVIOR", "delivered")
+        .arg("daemon")
+        .arg("start")
+        .arg("--foreground")
+        .spawn()?;
+
+    assert!(wait_for_daemon(&state_dir), "replacement daemon failed to start after SIGKILL");
+
+    // 4. Verify crash-recovery re-arm on boot from durable store
+    let client2 = DaemonClient::connect(&state_dir)?;
+    let alarms = client2.list_alarms(None)?;
+    assert_eq!(alarms.len(), 1);
+    assert_eq!(alarms[0].id, alarm.id);
+    assert_eq!(alarms[0].status, AlarmStatus::Pending);
+
+    // 5. Clean shutdown of replacement daemon
+    Daemon::stop(&state_dir)?;
+    let _ = child2.wait()?;
     Ok(())
 }
 

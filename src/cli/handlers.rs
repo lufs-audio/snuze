@@ -362,6 +362,7 @@ pub fn handle_daemon(args: &DaemonArgs, state_dir: &Path) -> CliResult {
 ///
 /// # Errors
 /// Returns `SnuzeError` if diagnostics determine an unrecoverable component failure.
+#[allow(clippy::too_many_lines)]
 pub fn handle_doctor(args: &DoctorArgs, state_dir: &Path) -> CliResult {
     let mut check_results = HashMap::new();
 
@@ -403,6 +404,7 @@ pub fn handle_doctor(args: &DoctorArgs, state_dir: &Path) -> CliResult {
     );
 
     let mut counts = HashMap::new();
+    let mut corrupt_alarms = Vec::new();
     if let Ok(store) = AlarmStore::open(state_dir) {
         if let Ok(alarms) = store.list(None) {
             for a in alarms {
@@ -416,8 +418,20 @@ pub fn handle_doctor(args: &DoctorArgs, state_dir: &Path) -> CliResult {
                 *counts.entry(key).or_insert(0) += 1;
             }
         }
+        corrupt_alarms = store.scan_errors();
     }
     check_results.insert("alarm_counts", serde_json::json!(counts));
+
+    let scan_errors_json: Vec<serde_json::Value> = corrupt_alarms
+        .iter()
+        .map(|(file, reason)| {
+            serde_json::json!({
+                "file": file,
+                "reason": reason,
+            })
+        })
+        .collect();
+    check_results.insert("corrupt_alarms", serde_json::json!(scan_errors_json));
 
     let failed_count = counts.get("failed").copied().unwrap_or(0);
     let missed_count = counts.get("missed").copied().unwrap_or(0);
@@ -426,10 +440,13 @@ pub fn handle_doctor(args: &DoctorArgs, state_dir: &Path) -> CliResult {
     let herdr_ok = herdr_binary != "missing";
 
     if !herdr_ok {
-        if args.json {
-            return Err(SnuzeError::HerdrBinaryMissing);
-        }
         return Err(SnuzeError::HerdrBinaryMissing);
+    }
+
+    if !herdr_socket_reachable {
+        return Err(SnuzeError::DaemonUnavailable(
+            "herdr socket is unreachable".to_string(),
+        ));
     }
 
     if !state_dir_writable {
@@ -447,22 +464,30 @@ pub fn handle_doctor(args: &DoctorArgs, state_dir: &Path) -> CliResult {
     if args.json {
         Ok(serde_json::to_value(&check_results).unwrap_or(serde_json::Value::Null))
     } else {
-        let output = format!(
+        let mut output = format!(
             "Herdr Binary: {}\n\
              Herdr Socket: {}\n\
              Daemon Running: {}\n\
              State Dir Writable: {}\n\
              Pending Alarms: {}\n\
              Failed Alarms: {}\n\
-             Missed Alarms: {}",
+             Missed Alarms: {}\n\
+             Corrupt Alarms: {}",
             herdr_binary,
             if herdr_socket_reachable { "reachable" } else { "unreachable" },
             if daemon_running { "running" } else { "stopped" },
             if state_dir_writable { "yes" } else { "no" },
             pending_count,
             failed_count,
-            missed_count
+            missed_count,
+            corrupt_alarms.len()
         );
+        if !corrupt_alarms.is_empty() {
+            output.push_str("\nCorrupt Alarm Files:");
+            for (file, reason) in &corrupt_alarms {
+                let _ = write!(output, "\n  - {file}: {reason}");
+            }
+        }
         Ok(serde_json::Value::String(output))
     }
 }
