@@ -239,3 +239,111 @@ fn test_cli_end_to_end_crud() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[test]
+fn test_cli_doctor_fails_when_herdr_socket_unreachable() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempfile::tempdir()?;
+    let state_dir = temp_dir.path().to_path_buf();
+
+    // Start daemon
+    let mut start_cmd = Command::new(env!("CARGO_BIN_EXE_snuze"));
+    start_cmd
+        .env("XDG_STATE_HOME", &state_dir)
+        .env("FAKE_HERDR_PATH", fake_herdr_path())
+        .env("FAKE_HERDR_BEHAVIOR", "delivered")
+        .arg("daemon")
+        .arg("start")
+        .arg("--json");
+    let start_out = start_cmd.output()?;
+    assert!(start_out.status.success());
+
+    // Run doctor with fake herdr set to fail socket check
+    let mut doctor_cmd = Command::new(env!("CARGO_BIN_EXE_snuze"));
+    doctor_cmd
+        .env("XDG_STATE_HOME", &state_dir)
+        .env("FAKE_HERDR_PATH", fake_herdr_path())
+        .env("FAKE_HERDR_BEHAVIOR", "generic_error")
+        .arg("doctor")
+        .arg("--json");
+    let doctor_out = doctor_cmd.output()?;
+    assert_eq!(doctor_out.status.code(), Some(6)); // DaemonUnavailable
+
+    // Stop daemon
+    let mut stop_cmd = Command::new(env!("CARGO_BIN_EXE_snuze"));
+    stop_cmd
+        .env("XDG_STATE_HOME", &state_dir)
+        .arg("daemon")
+        .arg("stop");
+    let _ = stop_cmd.output();
+
+    Ok(())
+}
+
+#[test]
+fn test_cli_doctor_surfaces_scan_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempfile::tempdir()?;
+    let state_dir = temp_dir.path().to_path_buf();
+
+    // Write a corrupt alarm file directly to alarms dir
+    let alarms_dir = state_dir.join("snuze/alarms");
+    std::fs::create_dir_all(&alarms_dir)?;
+    std::fs::write(alarms_dir.join("corrupted.json"), b"not valid json")?;
+
+    // Start daemon
+    let mut start_cmd = Command::new(env!("CARGO_BIN_EXE_snuze"));
+    start_cmd
+        .env("XDG_STATE_HOME", &state_dir)
+        .env("FAKE_HERDR_PATH", fake_herdr_path())
+        .env("FAKE_HERDR_BEHAVIOR", "delivered")
+        .arg("daemon")
+        .arg("start");
+    let start_out = start_cmd.output()?;
+    assert!(start_out.status.success());
+
+    // Run doctor --json
+    let mut doctor_json_cmd = Command::new(env!("CARGO_BIN_EXE_snuze"));
+    doctor_json_cmd
+        .env("XDG_STATE_HOME", &state_dir)
+        .env("FAKE_HERDR_PATH", fake_herdr_path())
+        .env("FAKE_HERDR_BEHAVIOR", "delivered")
+        .arg("doctor")
+        .arg("--json");
+    let doctor_json_out = doctor_json_cmd.output()?;
+    assert_eq!(doctor_json_out.status.code(), Some(0));
+
+    let json_val: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&doctor_json_out.stdout))?;
+    let corrupt_array = json_val
+        .get("data")
+        .and_then(|d| d.get("corrupt_alarms"))
+        .and_then(|c| c.as_array())
+        .unwrap();
+    assert_eq!(corrupt_array.len(), 1);
+    assert_eq!(
+        corrupt_array[0].get("file").and_then(|f| f.as_str()),
+        Some("corrupted.json")
+    );
+
+    // Run doctor human format
+    let mut doctor_human_cmd = Command::new(env!("CARGO_BIN_EXE_snuze"));
+    doctor_human_cmd
+        .env("XDG_STATE_HOME", &state_dir)
+        .env("FAKE_HERDR_PATH", fake_herdr_path())
+        .env("FAKE_HERDR_BEHAVIOR", "delivered")
+        .arg("doctor");
+    let doctor_human_out = doctor_human_cmd.output()?;
+    assert_eq!(doctor_human_out.status.code(), Some(0));
+    let human_str = String::from_utf8_lossy(&doctor_human_out.stdout);
+    assert!(human_str.contains("Corrupt Alarms: 1"));
+    assert!(human_str.contains("corrupted.json"));
+
+    // Stop daemon
+    let mut stop_cmd = Command::new(env!("CARGO_BIN_EXE_snuze"));
+    stop_cmd
+        .env("XDG_STATE_HOME", &state_dir)
+        .arg("daemon")
+        .arg("stop");
+    let _ = stop_cmd.output();
+
+    Ok(())
+}
