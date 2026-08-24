@@ -4,7 +4,8 @@ pub mod heap;
 use crate::jules::JulesAdapter;
 use crate::kernel::duration::format_duration;
 use crate::kernel::{
-    Alarm, DeliveryMode, JulesSessionState, TemplateVars, Trigger,
+    herdr_status_satisfied, Alarm, DeliveryMode, HerdrWatchStatus, JulesSessionState,
+    TemplateVars, Trigger,
 };
 use crate::scheduler::heap::AlarmHeap;
 use std::collections::HashSet;
@@ -12,6 +13,18 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 pub use clock::{Clock, FakeClock, SystemClock};
+
+/// Push signal delivered to the scheduler to resolve matching pending alarms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PushSignal {
+    HerdrPaneEvent {
+        pane_id: String,
+        new_status: HerdrWatchStatus,
+    },
+    ExternalSignal {
+        match_key: String,
+    },
+}
 
 /// Outcome of attempting to deliver an alarm to a Herdr pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,8 +117,8 @@ impl Scheduler {
         }
     }
 
-    /// Arms an alarm. For `Deadline`, checks the grace window; for `JulesCondition`, checks `timeout_at`.
-    pub fn arm(&self, alarm: Alarm) {
+    /// Arms an alarm. For `Deadline`, checks the grace window; for `JulesCondition` and `HerdrStatus`, checks `timeout_at`.
+    pub fn arm(&self, mut alarm: Alarm) {
         let now = self.clock.now();
         match &alarm.trigger {
             Trigger::Deadline => {
@@ -116,8 +129,16 @@ impl Scheduler {
                     }
                 }
             }
-            Trigger::JulesCondition { timeout_at, .. }
-            | Trigger::HerdrStatus { timeout_at, .. }
+            Trigger::JulesCondition { timeout_at, .. } => {
+                if now >= *timeout_at {
+                    (self.on_event)(FiredEvent::Failed {
+                        id: alarm.id,
+                        reason: "timeout".to_string(),
+                    });
+                    return;
+                }
+            }
+            Trigger::HerdrStatus { timeout_at, .. }
             | Trigger::ExternalSignal { timeout_at, .. } => {
                 if now >= *timeout_at {
                     (self.on_event)(FiredEvent::Failed {
@@ -126,6 +147,7 @@ impl Scheduler {
                     });
                     return;
                 }
+                alarm.deadline = *timeout_at;
             }
         }
 
@@ -137,6 +159,77 @@ impl Scheduler {
         state.heap.push(alarm);
         drop(state);
         self.clock.wake();
+    }
+
+    /// See SPEC.md §3.3 for the full contract. Broadcast semantics: returns
+    /// the IDs of every alarm this call resolved; an empty Vec is a valid,
+    /// non-error outcome.
+    pub fn signal(&self, signal: PushSignal) -> Vec<String> {
+        let mut resolved_ids = Vec::new();
+        let mut to_deliver = Vec::new();
+        let now = self.clock.now();
+
+        {
+            let mut state = match self.state.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+
+            match signal {
+                PushSignal::ExternalSignal { match_key } => {
+                    let removed = state.heap.extract_matching(|alarm| {
+                        if let Trigger::ExternalSignal {
+                            match_key: ref trigger_key,
+                            ..
+                        } = alarm.trigger
+                        {
+                            trigger_key == &match_key
+                        } else {
+                            false
+                        }
+                    });
+                    for alarm in removed {
+                        resolved_ids.push(alarm.id.clone());
+                        state.in_flight.insert(alarm.id.clone());
+                        to_deliver.push(alarm);
+                    }
+                }
+                PushSignal::HerdrPaneEvent {
+                    pane_id,
+                    new_status,
+                } => {
+                    let removed = state.heap.extract_matching(|alarm| {
+                        if let Trigger::HerdrStatus {
+                            watched_pane_id: ref wpid,
+                            watch_for: ref wf,
+                            ref mut last_known,
+                            ..
+                        } = alarm.trigger
+                        {
+                            if wpid == &pane_id {
+                                if herdr_status_satisfied(wf, new_status) {
+                                    return true;
+                                }
+                                *last_known = Some(new_status);
+                            }
+                        }
+                        false
+                    });
+
+                    for alarm in removed {
+                        resolved_ids.push(alarm.id.clone());
+                        state.in_flight.insert(alarm.id.clone());
+                        to_deliver.push(alarm);
+                    }
+                }
+            }
+        }
+
+        for alarm in to_deliver {
+            self.deliver_signal_alarm(alarm, now);
+        }
+
+        resolved_ids
     }
 
     /// Cancels a pending alarm by ID. Returns `true` if it was found and removed or marked canceled.
@@ -207,7 +300,14 @@ impl Scheduler {
                     Trigger::Deadline => self.process_deadline_alarm(alarm, now),
                     Trigger::JulesCondition { .. } => self.process_jules_alarm(alarm, now),
                     Trigger::HerdrStatus { .. } | Trigger::ExternalSignal { .. } => {
-                        self.process_deadline_alarm(alarm, now);
+                        if self.is_canceled(&alarm.id) {
+                            self.finish_in_flight(&alarm.id);
+                        } else if !self.finish_in_flight(&alarm.id) {
+                            (self.on_event)(FiredEvent::Failed {
+                                id: alarm.id,
+                                reason: "timeout".to_string(),
+                            });
+                        }
                     }
                 }
             } else if let Some(deadline) = wait_deadline {
@@ -220,6 +320,49 @@ impl Scheduler {
                 self.clock.wait_until(far_future);
             }
         }
+    }
+
+    /// Delivers an early push-signaled alarm (same delivery & event shape as normal pop firing).
+    fn deliver_signal_alarm(&self, alarm: Alarm, now: SystemTime) {
+        if self.is_canceled(&alarm.id) {
+            self.finish_in_flight(&alarm.id);
+            return;
+        }
+
+        let dur = now.duration_since(alarm.created_at).unwrap_or_default();
+        let dur_str = format_duration(dur);
+        let vars = TemplateVars {
+            duration: Some(dur_str),
+            session_id: None,
+            status: None,
+            pr_urls: None,
+        };
+        let mut delivered_alarm = alarm.clone();
+        match &mut delivered_alarm.delivery {
+            DeliveryMode::Prompt { text } | DeliveryMode::Command { text } => {
+                *text = crate::kernel::interpolate(text, &vars);
+            }
+        }
+
+        let outcome = self.adapter.deliver(&delivered_alarm);
+        if self.finish_in_flight(&alarm.id) {
+            return;
+        }
+
+        let event = match outcome {
+            DeliveryOutcome::Delivered => FiredEvent::Fired {
+                id: alarm.id,
+                at: now,
+            },
+            DeliveryOutcome::AgentBlocked(reason)
+            | DeliveryOutcome::PromptStalled(reason)
+            | DeliveryOutcome::PaneGone(reason)
+            | DeliveryOutcome::HerdrUnavailable(reason) => FiredEvent::Failed {
+                id: alarm.id,
+                reason,
+            },
+        };
+        (self.on_event)(event);
     }
 
     /// Processes a `Trigger::Deadline` alarm: checks grace window, interpolates
