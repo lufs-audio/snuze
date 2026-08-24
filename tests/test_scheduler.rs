@@ -313,3 +313,180 @@ fn test_scheduler_cancel_next_due_alarm_rearms_next() {
     }
     assert_eq!(adapter.delivered_count(), 1);
 }
+
+struct BlockingHerdrAdapter {
+    tx_start: Sender<()>,
+    rx_release: Mutex<Receiver<()>>,
+}
+
+impl HerdrAdapter for BlockingHerdrAdapter {
+    fn deliver(&self, _alarm: &Alarm) -> DeliveryOutcome {
+        let _ = self.tx_start.send(());
+        let rx = self.rx_release.lock().unwrap();
+        let _ = rx.recv();
+        DeliveryOutcome::Delivered
+    }
+}
+
+struct BlockingJulesAdapter {
+    tx_start: Sender<()>,
+    rx_release: Mutex<Receiver<()>>,
+}
+
+impl snuze::jules::JulesAdapter for BlockingJulesAdapter {
+    fn check_sessions(
+        &self,
+        session_ids: &[String],
+    ) -> Result<Vec<snuze::kernel::JulesSessionState>, snuze::kernel::SnuzeError> {
+        let _ = self.tx_start.send(());
+        let rx = self.rx_release.lock().unwrap();
+        let _ = rx.recv();
+        Ok(session_ids
+            .iter()
+            .map(|id| snuze::kernel::JulesSessionState {
+                session_id: id.clone(),
+                state: snuze::kernel::JulesState::InProgress,
+                pull_request_url: None,
+            })
+            .collect())
+    }
+}
+
+#[test]
+fn test_scheduler_cancel_in_flight_delivery_suppresses_fired_event() {
+    let (tx_start, rx_start) = channel();
+    let (tx_release, rx_release) = channel();
+
+    let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+    let clock = FakeClock::new(base_time);
+    let adapter = BlockingHerdrAdapter {
+        tx_start,
+        rx_release: Mutex::new(rx_release),
+    };
+
+    let (tx, rx): (Sender<FiredEvent>, Receiver<FiredEvent>) = channel();
+    let jules_adapter = Box::new(MockJulesAdapter::new(vec![]));
+    let scheduler = Arc::new(Scheduler::new(
+        Box::new(adapter),
+        jules_adapter,
+        Box::new(clock.clone()),
+        Duration::from_mins(10),
+        Box::new(move |event| {
+            let _ = tx.send(event);
+        }),
+    ));
+
+    let sched_bg = Arc::clone(&scheduler);
+    thread::spawn(move || {
+        sched_bg.run();
+    });
+
+    scheduler.arm(create_test_alarm("inflight-alarm", base_time + Duration::from_secs(10)));
+    clock.advance(Duration::from_secs(10));
+
+    // Wait until deliver() is actively executing
+    rx_start
+        .recv_timeout(Duration::from_millis(500))
+        .expect("deliver did not start");
+
+    // Cancel while in-flight
+    assert!(
+        scheduler.cancel("inflight-alarm"),
+        "cancel should return true for in-flight alarm"
+    );
+
+    // Unblock deliver()
+    tx_release.send(()).unwrap();
+
+    // Verify no FiredEvent is delivered
+    assert!(
+        rx.recv_timeout(Duration::from_millis(100)).is_err(),
+        "in-flight canceled alarm should not emit FiredEvent"
+    );
+}
+
+#[test]
+fn test_scheduler_cancel_in_flight_jules_poll_suppresses_progress_and_rearm() {
+    use snuze::kernel::JulesCondition;
+
+    let (tx_start, rx_start) = channel();
+    let (tx_release, rx_release) = channel();
+
+    let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+    let clock = FakeClock::new(base_time);
+    let herdr_adapter = MockHerdrAdapter::new();
+    let jules_adapter = Box::new(BlockingJulesAdapter {
+        tx_start,
+        rx_release: Mutex::new(rx_release),
+    });
+
+    let (tx, rx): (Sender<FiredEvent>, Receiver<FiredEvent>) = channel();
+    let scheduler = Arc::new(Scheduler::new(
+        Box::new(herdr_adapter),
+        jules_adapter,
+        Box::new(clock.clone()),
+        Duration::from_mins(10),
+        Box::new(move |event| {
+            let _ = tx.send(event);
+        }),
+    ));
+
+    let sched_bg = Arc::clone(&scheduler);
+    thread::spawn(move || {
+        sched_bg.run();
+    });
+
+    let jules_alarm = Alarm {
+        id: "jules-inflight".to_string(),
+        pane_id: "pane_test".to_string(),
+        created_by_pane: None,
+        delivery: DeliveryMode::Prompt {
+            text: "Jules wake up".to_string(),
+        },
+        label: None,
+        created_at: base_time,
+        deadline: base_time + Duration::from_secs(10),
+        status: AlarmStatus::Pending,
+        fired_at: None,
+        failure_reason: None,
+        trigger: Trigger::JulesCondition {
+            session_ids: vec!["sess-1".to_string()],
+            condition: JulesCondition::AllTerminal,
+            poll_interval_secs: 30,
+            timeout_at: base_time + Duration::from_mins(10),
+            last_known: vec![],
+        },
+        schema_version: 1,
+    };
+
+    scheduler.arm(jules_alarm);
+    clock.advance(Duration::from_secs(10));
+
+    // Wait until check_sessions() is actively executing
+    rx_start
+        .recv_timeout(Duration::from_millis(500))
+        .expect("check_sessions did not start");
+
+    // Cancel while in-flight
+    assert!(
+        scheduler.cancel("jules-inflight"),
+        "cancel should return true for in-flight jules alarm"
+    );
+
+    // Unblock check_sessions()
+    tx_release.send(()).unwrap();
+
+    // Verify no Progress event is delivered and alarm does not rearm
+    assert!(
+        rx.recv_timeout(Duration::from_millis(100)).is_err(),
+        "in-flight canceled jules alarm should not emit Progress event"
+    );
+
+    // Advance past subsequent poll and timeout intervals to confirm no ghost wakes
+    clock.advance(Duration::from_secs(1000));
+    assert!(
+        rx.recv_timeout(Duration::from_millis(100)).is_err(),
+        "canceled jules alarm must not fire later"
+    );
+}
+

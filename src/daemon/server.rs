@@ -54,6 +54,9 @@ impl Daemon {
                 | FiredEvent::Progress { id, .. } => id,
             };
             if let Ok(mut alarm) = store_clone.get(id) {
+                if alarm.status != AlarmStatus::Pending {
+                    return;
+                }
                 match event {
                     FiredEvent::Fired { at, .. } => {
                         alarm.status = AlarmStatus::Fired;
