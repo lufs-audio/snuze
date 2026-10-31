@@ -2,7 +2,7 @@
 #![allow(clippy::indexing_slicing)]
 
 use snuze::daemon::outbox::{EventOutbox, OutboxEvent};
-use snuze::kernel::{Alarm, AlarmStatus, DeliveryMode, Trigger};
+use snuze::kernel::{Alarm, AlarmStatus, DeliveryMode, DeliveryTarget, Trigger};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -14,7 +14,9 @@ use tempfile::tempdir;
 fn make_dummy_alarm(id: &str, trigger: Trigger) -> Alarm {
     Alarm {
         id: id.to_string(),
-        pane_id: "w1:p1".to_string(),
+        target: DeliveryTarget::Herdr {
+            pane_id: "w1:p1".to_string(),
+        },
         created_by_pane: Some("w1:p0".to_string()),
         delivery: DeliveryMode::Prompt {
             text: "Wake up".to_string(),

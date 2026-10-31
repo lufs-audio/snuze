@@ -32,7 +32,15 @@ fn test_cli_dry_run_set_json() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(json.get("status").and_then(|s| s.as_str()), Some("success"));
     assert_eq!(
         json.get("data")
-            .and_then(|d| d.get("pane_id"))
+            .and_then(|d| d.get("target"))
+            .and_then(|t| t.get("type"))
+            .and_then(|s| s.as_str()),
+        Some("herdr")
+    );
+    assert_eq!(
+        json.get("data")
+            .and_then(|d| d.get("target"))
+            .and_then(|t| t.get("pane_id"))
             .and_then(|s| s.as_str()),
         Some("w1:p3")
     );
@@ -155,7 +163,10 @@ fn test_cli_end_to_end_crud() -> Result<(), Box<dyn std::error::Error>> {
 
     let set_json: serde_json::Value =
         serde_json::from_str(&String::from_utf8_lossy(&set_out.stdout))?;
-    assert_eq!(set_json.get("status").and_then(|s| s.as_str()), Some("success"));
+    assert_eq!(
+        set_json.get("status").and_then(|s| s.as_str()),
+        Some("success")
+    );
     let alarm_id = set_json
         .get("data")
         .and_then(|d| d.get("id"))
@@ -174,7 +185,10 @@ fn test_cli_end_to_end_crud() -> Result<(), Box<dyn std::error::Error>> {
 
     let list_json: serde_json::Value =
         serde_json::from_str(&String::from_utf8_lossy(&list_out.stdout))?;
-    assert_eq!(list_json.get("status").and_then(|s| s.as_str()), Some("success"));
+    assert_eq!(
+        list_json.get("status").and_then(|s| s.as_str()),
+        Some("success")
+    );
     let list_data = list_json.get("data").and_then(|d| d.as_array()).unwrap();
     assert_eq!(list_data.len(), 1);
 
@@ -190,9 +204,15 @@ fn test_cli_end_to_end_crud() -> Result<(), Box<dyn std::error::Error>> {
 
     let status_json: serde_json::Value =
         serde_json::from_str(&String::from_utf8_lossy(&status_out.stdout))?;
-    assert_eq!(status_json.get("status").and_then(|s| s.as_str()), Some("success"));
     assert_eq!(
-        status_json.get("data").and_then(|d| d.get("id")).and_then(|s| s.as_str()),
+        status_json.get("status").and_then(|s| s.as_str()),
+        Some("success")
+    );
+    assert_eq!(
+        status_json
+            .get("data")
+            .and_then(|d| d.get("id"))
+            .and_then(|s| s.as_str()),
         Some(alarm_id.as_str())
     );
 
@@ -345,5 +365,420 @@ fn test_cli_doctor_surfaces_scan_errors() -> Result<(), Box<dyn std::error::Erro
         .arg("stop");
     let _ = stop_cmd.output();
 
+    Ok(())
+}
+
+/// Unit 01: delivery-target resolution (explicit flags, `--target` specs, and
+/// `$HERDR_ENV`/`$TMUX` auto-detection) plus the USAGE error when nothing resolves.
+#[test]
+fn test_cli_delivery_target_resolution() -> Result<(), Box<dyn std::error::Error>> {
+    fn run_set(
+        extra: &[&str],
+        env: &[(&str, &str)],
+    ) -> Result<(i32, serde_json::Value), Box<dyn std::error::Error>> {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_snuze"));
+        cmd.env_remove("HERDR_ENV")
+            .env_remove("HERDR_PANE_ID")
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .env_remove("FAKE_HERDR_PATH");
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        cmd.arg("set").arg("--after").arg("10s").args(extra);
+        let out = cmd.output()?;
+        let code = out.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let json = serde_json::from_str(&stdout).unwrap_or(serde_json::Value::Null);
+        Ok((code, json))
+    }
+
+    // 1. Explicit --tmux works with no Herdr anywhere in sight.
+    let (code, json) = run_set(
+        &["--tmux", "%0", "--prompt", "hi", "--dry-run", "--json"],
+        &[],
+    )?;
+    assert_eq!(code, 0);
+    assert_eq!(json["data"]["target"]["type"], "tmux");
+    assert_eq!(json["data"]["target"]["target"], "%0");
+
+    // 2. --target tmux:<id> is equivalent.
+    let (code, json) = run_set(
+        &[
+            "--target",
+            "tmux:%2",
+            "--prompt",
+            "hi",
+            "--dry-run",
+            "--json",
+        ],
+        &[],
+    )?;
+    assert_eq!(code, 0);
+    assert_eq!(json["data"]["target"]["type"], "tmux");
+    assert_eq!(json["data"]["target"]["target"], "%2");
+
+    // 3. --target wait needs no payload at all.
+    let (code, json) = run_set(&["--target", "wait", "--dry-run", "--json"], &[])?;
+    assert_eq!(code, 0);
+    assert_eq!(json["data"]["target"]["type"], "wait");
+
+    // 4. No target flag and no environment -> USAGE (exit 2).
+    let (code, _) = run_set(&["--prompt", "hi", "--dry-run", "--json"], &[])?;
+    assert_eq!(code, 2);
+
+    // 5. $TMUX + $TMUX_PANE auto-detect a tmux target.
+    let (code, json) = run_set(
+        &["--prompt", "hi", "--dry-run", "--json"],
+        &[
+            ("TMUX", "/tmp/tmux-1000/default,123,0"),
+            ("TMUX_PANE", "%7"),
+        ],
+    )?;
+    assert_eq!(code, 0);
+    assert_eq!(json["data"]["target"]["type"], "tmux");
+    assert_eq!(json["data"]["target"]["target"], "%7");
+
+    // 6. $HERDR_ENV=1 + $HERDR_PANE_ID auto-detect a Herdr target.
+    let (code, json) = run_set(
+        &["--prompt", "hi", "--dry-run", "--json"],
+        &[
+            ("HERDR_ENV", "1"),
+            ("HERDR_PANE_ID", "w1:p5"),
+            ("FAKE_HERDR_PATH", fake_herdr_path().to_str().unwrap()),
+            ("FAKE_HERDR_BEHAVIOR", "delivered"),
+        ],
+    )?;
+    assert_eq!(code, 0);
+    assert_eq!(json["data"]["target"]["type"], "herdr");
+    assert_eq!(json["data"]["target"]["pane_id"], "w1:p5");
+
+    // 7. Conflicting target flags -> USAGE (exit 2).
+    let (code, _) = run_set(
+        &[
+            "--pane",
+            "w1:p3",
+            "--tmux",
+            "%0",
+            "--prompt",
+            "hi",
+            "--dry-run",
+            "--json",
+        ],
+        &[("FAKE_HERDR_PATH", fake_herdr_path().to_str().unwrap())],
+    )?;
+    assert_eq!(code, 2);
+    // 8. Malformed --target -> USAGE (exit 2).
+    let (code, _) = run_set(
+        &[
+            "--target",
+            "nope:x",
+            "--prompt",
+            "hi",
+            "--dry-run",
+            "--json",
+        ],
+        &[],
+    )?;
+    assert_eq!(code, 2);
+
+    Ok(())
+}
+
+/// Unit 02: `--pid` process-exit trigger — scheduling, preflight, and conflicts.
+#[test]
+fn test_cli_pid_trigger() -> Result<(), Box<dyn std::error::Error>> {
+    fn run_set(
+        extra: &[&str],
+    ) -> Result<(i32, String, serde_json::Value), Box<dyn std::error::Error>> {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_snuze"));
+        cmd.env_remove("HERDR_ENV")
+            .env_remove("HERDR_PANE_ID")
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE");
+        cmd.arg("set").args(extra);
+        let out = cmd.output()?;
+        let code = out.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let json = serde_json::from_str(&stdout).unwrap_or(serde_json::Value::Null);
+        Ok((code, stdout, json))
+    }
+
+    // 1. A PID that does not exist fails immediately with an actionable error.
+    let (code, stdout, json) = run_set(&[
+        "--pid",
+        "999999",
+        "--prompt",
+        "done",
+        "--tmux",
+        "%0",
+        "--dry-run",
+        "--json",
+    ])?;
+    assert_eq!(code, 3, "expected TargetUnavailable, got: {stdout}");
+    assert_eq!(json["code"], 3);
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not running"),
+        "unexpected message: {stdout}"
+    );
+
+    // 2. A live PID schedules a process_exit alarm; --timeout is optional.
+    let mut child = Command::new("sh").arg("-c").arg("sleep 30").spawn()?;
+    let pid = child.id().to_string();
+
+    let (code, stdout, json) = run_set(&[
+        "--pid",
+        &pid,
+        "--prompt",
+        "process exited",
+        "--tmux",
+        "%0",
+        "--dry-run",
+        "--json",
+    ])?;
+    assert_eq!(code, 0, "expected success, got: {stdout}");
+    assert_eq!(json["data"]["trigger"]["kind"], "process_exit");
+    assert_eq!(
+        json["data"]["trigger"]["pid"].as_u64(),
+        Some(pid.parse::<u64>().unwrap())
+    );
+
+    // 3. An explicit --timeout is honoured.
+    let (code, stdout, json) = run_set(&[
+        "--pid",
+        &pid,
+        "--timeout",
+        "90m",
+        "--prompt",
+        "x",
+        "--tmux",
+        "%0",
+        "--dry-run",
+        "--json",
+    ])?;
+    assert_eq!(code, 0, "expected success, got: {stdout}");
+    assert_eq!(json["data"]["trigger"]["kind"], "process_exit");
+
+    // 4. --pid combined with another trigger mode is a USAGE error.
+    let (code, _, _) = run_set(&[
+        "--pid",
+        &pid,
+        "--after",
+        "10s",
+        "--prompt",
+        "x",
+        "--tmux",
+        "%0",
+        "--dry-run",
+        "--json",
+    ])?;
+    assert_eq!(code, 2);
+
+    // 5. Malformed --timeout with --pid is a USAGE error.
+    let (code, _, _) = run_set(&[
+        "--pid",
+        &pid,
+        "--timeout",
+        "soon",
+        "--prompt",
+        "x",
+        "--tmux",
+        "%0",
+        "--dry-run",
+        "--json",
+    ])?;
+    assert_eq!(code, 2);
+
+    let _ = child.kill();
+    let _ = child.wait();
+    Ok(())
+}
+
+/// Unit 03: `--watch-file` / `--watch-mode` artifact trigger.
+#[test]
+fn test_cli_watch_file_trigger() -> Result<(), Box<dyn std::error::Error>> {
+    fn run_set(
+        extra: &[&str],
+    ) -> Result<(i32, String, serde_json::Value), Box<dyn std::error::Error>> {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_snuze"));
+        cmd.env_remove("HERDR_ENV")
+            .env_remove("HERDR_PANE_ID")
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE");
+        cmd.arg("set").args(extra);
+        let out = cmd.output()?;
+        let code = out.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let json = serde_json::from_str(&stdout).unwrap_or(serde_json::Value::Null);
+        Ok((code, stdout, json))
+    }
+
+    // 1. --watch-file defaults to `exists` mode.
+    let (code, stdout, json) = run_set(&[
+        "--watch-file",
+        "/tmp/take.json",
+        "--prompt",
+        "ready",
+        "--tmux",
+        "%0",
+        "--dry-run",
+        "--json",
+    ])?;
+    assert_eq!(code, 0, "expected success, got: {stdout}");
+    assert_eq!(json["data"]["trigger"]["kind"], "file_artifact");
+    assert_eq!(json["data"]["trigger"]["mode"], "exists");
+    assert_eq!(json["data"]["trigger"]["path"], "/tmp/take.json");
+
+    // 2. --watch-mode modified is honoured.
+    let (code, stdout, json) = run_set(&[
+        "--watch-file",
+        "/tmp/*.json",
+        "--watch-mode",
+        "modified",
+        "--prompt",
+        "ready",
+        "--tmux",
+        "%0",
+        "--dry-run",
+        "--json",
+    ])?;
+    assert_eq!(code, 0, "expected success, got: {stdout}");
+    assert_eq!(json["data"]["trigger"]["mode"], "modified");
+
+    // 3. An unrecognized --watch-mode is a USAGE error.
+    let (code, _, _) = run_set(&[
+        "--watch-file",
+        "/tmp/x.json",
+        "--watch-mode",
+        "sideways",
+        "--prompt",
+        "ready",
+        "--tmux",
+        "%0",
+        "--dry-run",
+        "--json",
+    ])?;
+    assert_eq!(code, 2);
+
+    // 4. --watch-mode without --watch-file is a USAGE error.
+    let (code, _, _) = run_set(&[
+        "--after",
+        "10s",
+        "--watch-mode",
+        "modified",
+        "--prompt",
+        "ready",
+        "--tmux",
+        "%0",
+        "--dry-run",
+        "--json",
+    ])?;
+    assert_eq!(code, 2);
+
+    // 5. --watch-file conflicts with --after.
+    let (code, _, _) = run_set(&[
+        "--after",
+        "10s",
+        "--watch-file",
+        "/tmp/x.json",
+        "--prompt",
+        "ready",
+        "--tmux",
+        "%0",
+        "--dry-run",
+        "--json",
+    ])?;
+    assert_eq!(code, 2);
+
+    Ok(())
+}
+
+/// Unit 04: `snuze wait <ALARM_ID>` blocks on the daemon and maps the terminal
+/// state onto the process exit code.
+#[test]
+fn test_cli_wait_command() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempfile::tempdir()?;
+    let state_dir = temp_dir.path().to_path_buf();
+
+    fn snuze(
+        state_dir: &std::path::Path,
+        args: &[&str],
+    ) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_snuze"));
+        cmd.env("XDG_STATE_HOME", state_dir)
+            .env_remove("HERDR_ENV")
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE");
+        cmd.args(args);
+        Ok(cmd.output()?)
+    }
+
+    // Start the daemon.
+    let start = snuze(&state_dir, &["daemon", "start", "--json"])?;
+    assert!(start.status.success(), "daemon failed to start");
+
+    // 1. Schedule a `wait`-target alarm one second out, then block on it.
+    let set = snuze(
+        &state_dir,
+        &["set", "--target", "wait", "--after", "1s", "--json"],
+    )?;
+    assert_eq!(set.status.code(), Some(0));
+    let set_json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&set.stdout))?;
+    let alarm_id = set_json["data"]["id"].as_str().unwrap().to_string();
+
+    let wait = snuze(&state_dir, &["wait", &alarm_id, "--json"])?;
+    assert_eq!(
+        wait.status.code(),
+        Some(0),
+        "expected Fired exit code 0, stdout={}",
+        String::from_utf8_lossy(&wait.stdout)
+    );
+    let wait_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&wait.stdout))?;
+    assert_eq!(wait_json["status"], "success");
+    assert_eq!(wait_json["data"]["alarm_id"], alarm_id);
+    assert_eq!(wait_json["data"]["status"], "fired");
+
+    // 2. An unknown alarm is a TargetUnavailable (exit 3).
+    let missing = snuze(
+        &state_dir,
+        &["wait", "01HGWY37VZ8Q0000", "--timeout", "5s", "--json"],
+    )?;
+    assert_eq!(missing.status.code(), Some(3));
+
+    // 3. Waiting past the timeout on a long alarm is a ContractViolated (exit 5).
+    let long = snuze(
+        &state_dir,
+        &["set", "--target", "wait", "--after", "1h", "--json"],
+    )?;
+    assert_eq!(long.status.code(), Some(0));
+    let long_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&long.stdout))?;
+    let long_id = long_json["data"]["id"].as_str().unwrap().to_string();
+
+    let timed_out = snuze(&state_dir, &["wait", &long_id, "--timeout", "1s", "--json"])?;
+    assert_eq!(
+        timed_out.status.code(),
+        Some(5),
+        "expected exit 5 on wait timeout, stdout={}",
+        String::from_utf8_lossy(&timed_out.stdout)
+    );
+    let timeout_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&timed_out.stdout))?;
+    assert_eq!(timeout_json["status"], "error");
+    assert_eq!(timeout_json["code"], 5);
+
+    // 4. A malformed --timeout is a USAGE error (exit 2).
+    let bad = snuze(
+        &state_dir,
+        &["wait", &long_id, "--timeout", "soon", "--json"],
+    )?;
+    assert_eq!(bad.status.code(), Some(2));
+
+    let stop = snuze(&state_dir, &["daemon", "stop"])?;
+    assert!(stop.status.success());
     Ok(())
 }

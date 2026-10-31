@@ -11,7 +11,14 @@ pub enum Request {
     ListAlarms(Option<AlarmStatus>),
     GetAlarm(String),
     CancelAlarm(String),
-    SignalAlarm { match_key: String },
+    SignalAlarm {
+        match_key: String,
+    },
+    /// Block until `alarm_id` reaches a terminal state (or `timeout_secs` elapses).
+    WaitAlarm {
+        alarm_id: String,
+        timeout_secs: Option<u64>,
+    },
     DrainEvents,
     Shutdown,
     Ping,
@@ -27,6 +34,11 @@ pub enum Response {
     AlarmList(Vec<Alarm>),
     CancelResult(bool),
     SignalResult(Vec<String>),
+    /// The awaited alarm reached `Fired`.
+    AlarmFired {
+        /// Alarm identifier that fired.
+        alarm_id: String,
+    },
     NotFound(String),
     Error(String),
     EventsDrained(Vec<OutboxEvent>),

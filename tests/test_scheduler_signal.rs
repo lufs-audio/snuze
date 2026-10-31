@@ -10,19 +10,18 @@
 #![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::match_wildcard_for_single_variants)]
 
-use snuze::jules::JulesAdapter;
 use snuze::kernel::{
-    Alarm, AlarmStatus, DeliveryMode, HerdrWatchStatus, JulesSessionState, SnuzeError, Trigger,
+    Alarm, AlarmStatus, DeliveryMode, DeliveryTarget, HerdrWatchStatus, SnuzeError, Trigger,
 };
-use snuze::scheduler::{DeliveryOutcome, FakeClock, FiredEvent, HerdrAdapter, PushSignal, Scheduler};
-use std::collections::HashMap;
+use snuze::scheduler::{
+    DeliveryAdapter, DeliveryOutcome, FakeClock, FiredEvent, PushSignal, Scheduler,
+};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Default)]
 struct MockHerdrAdapter {
-    delivered_alarms: Arc<Mutex<Vec<Alarm>>>,
-    outcomes: Arc<Mutex<HashMap<String, DeliveryOutcome>>>,
+    deliveries: Arc<Mutex<Vec<(DeliveryTarget, DeliveryMode)>>>,
 }
 
 impl MockHerdrAdapter {
@@ -31,34 +30,39 @@ impl MockHerdrAdapter {
     }
 
     fn delivered_count(&self) -> usize {
-        self.delivered_alarms.lock().unwrap().len()
+        self.deliveries.lock().unwrap().len()
     }
 
-    fn last_delivered(&self) -> Option<Alarm> {
-        self.delivered_alarms.lock().unwrap().last().cloned()
-    }
-}
-
-impl HerdrAdapter for MockHerdrAdapter {
-    fn deliver(&self, alarm: &Alarm) -> DeliveryOutcome {
-        self.delivered_alarms.lock().unwrap().push(alarm.clone());
-        self.outcomes
+    /// Delivery payload of the most recent delivery.
+    fn last_delivered(&self) -> Option<DeliveryMode> {
+        self.deliveries
             .lock()
             .unwrap()
-            .remove(&alarm.id)
-            .unwrap_or(DeliveryOutcome::Delivered)
+            .last()
+            .map(|(_, d)| d.clone())
+    }
+
+    /// Target of the most recent delivery.
+    fn last_target(&self) -> Option<DeliveryTarget> {
+        self.deliveries
+            .lock()
+            .unwrap()
+            .last()
+            .map(|(t, _)| t.clone())
     }
 }
 
-#[derive(Clone, Default)]
-struct MockJulesAdapter;
-
-impl JulesAdapter for MockJulesAdapter {
-    fn check_sessions(
+impl DeliveryAdapter for MockHerdrAdapter {
+    fn deliver(
         &self,
-        _session_ids: &[String],
-    ) -> Result<Vec<JulesSessionState>, SnuzeError> {
-        Ok(vec![])
+        target: &DeliveryTarget,
+        delivery: &DeliveryMode,
+    ) -> Result<DeliveryOutcome, SnuzeError> {
+        self.deliveries
+            .lock()
+            .unwrap()
+            .push((target.clone(), delivery.clone()));
+        Ok(DeliveryOutcome::Delivered)
     }
 }
 
@@ -73,7 +77,9 @@ fn create_herdr_alarm(
 ) -> Alarm {
     Alarm {
         id: id.to_string(),
-        pane_id: target_pane_id.to_string(),
+        target: DeliveryTarget::Herdr {
+            pane_id: target_pane_id.to_string(),
+        },
         created_by_pane: Some("w1:p0".to_string()),
         delivery: DeliveryMode::Prompt {
             text: prompt_template.to_string(),
@@ -104,7 +110,9 @@ fn create_external_alarm(
 ) -> Alarm {
     Alarm {
         id: id.to_string(),
-        pane_id: target_pane_id.to_string(),
+        target: DeliveryTarget::Herdr {
+            pane_id: target_pane_id.to_string(),
+        },
         created_by_pane: Some("w1:p0".to_string()),
         delivery: DeliveryMode::Prompt {
             text: prompt_template.to_string(),
@@ -131,7 +139,6 @@ fn setup_scheduler(
     let events_clone = Arc::clone(&events);
     let scheduler = Arc::new(Scheduler::new(
         Box::new(herdr_adapter),
-        Box::new(MockJulesAdapter),
         Box::new(clock),
         Duration::from_mins(10),
         Box::new(move |event| {
@@ -174,7 +181,10 @@ fn test_scheduler_signal_herdr_status_fires_on_match_and_updates_on_non_match() 
         pane_id: "w2:p2".to_string(),
         new_status: HerdrWatchStatus::Blocked,
     });
-    assert!(resolved.is_empty(), "non-matching status should not resolve");
+    assert!(
+        resolved.is_empty(),
+        "non-matching status should not resolve"
+    );
     assert_eq!(herdr.delivered_count(), 0);
     assert_eq!(events.lock().unwrap().len(), 0);
 
@@ -190,12 +200,17 @@ fn test_scheduler_signal_herdr_status_fires_on_match_and_updates_on_non_match() 
     assert_eq!(herdr.delivered_count(), 1);
 
     let delivered = herdr.last_delivered().expect("delivered alarm");
-    match delivered.delivery {
+    match delivered {
         DeliveryMode::Prompt { text } => {
             assert_eq!(text, "Target is ready after 30s!");
         }
         _ => panic!("expected Prompt delivery"),
     }
+
+    assert!(
+        matches!(herdr.last_target(), Some(DeliveryTarget::Herdr { .. })),
+        "signal-driven delivery must go to the alarm's Herdr target"
+    );
 
     let evs = events.lock().unwrap();
     assert_eq!(evs.len(), 1);
@@ -246,7 +261,10 @@ fn test_scheduler_signal_herdr_status_broadcast() {
     });
     resolved.sort();
 
-    assert_eq!(resolved, vec!["alarm-h1".to_string(), "alarm-h2".to_string()]);
+    assert_eq!(
+        resolved,
+        vec!["alarm-h1".to_string(), "alarm-h2".to_string()]
+    );
     assert_eq!(herdr.delivered_count(), 2);
     assert_eq!(events.lock().unwrap().len(), 2);
 }
@@ -385,7 +403,7 @@ fn test_scheduler_signal_external_matching() {
     assert_eq!(herdr.delivered_count(), 1);
 
     let delivered = herdr.last_delivered().expect("delivered alarm");
-    match delivered.delivery {
+    match delivered {
         DeliveryMode::Prompt { text } => {
             assert_eq!(text, "Deployment done after 45s!");
         }
@@ -438,7 +456,10 @@ fn test_scheduler_signal_external_broadcast() {
     });
     resolved.sort();
 
-    assert_eq!(resolved, vec!["alarm-b1".to_string(), "alarm-b2".to_string()]);
+    assert_eq!(
+        resolved,
+        vec!["alarm-b1".to_string(), "alarm-b2".to_string()]
+    );
     assert_eq!(herdr.delivered_count(), 2);
     assert_eq!(events.lock().unwrap().len(), 2);
 }

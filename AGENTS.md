@@ -33,9 +33,12 @@ cargo test
 
 ## 3. Architecture & Unit Boundaries
 
-- `src/kernel/`: Domain types (`Alarm`, `AlarmStatus`, `DeliveryMode`), duration parsing, `SnuzeError`, `ExitCode` mapping.
+- `src/kernel/`: Domain types (`Alarm`, `AlarmStatus`, `DeliveryMode`, `DeliveryTarget`), trigger definitions, duration parsing, `SnuzeError`, `ExitCode` mapping.
 - `src/store/`: Crash-safe disk persistence for alarms (`$XDG_STATE_HOME/snuze/alarms/<id>.json`).
-- `src/scheduler/`: Min-heap priority queue and condition-variable sleeping thread; publishes `HerdrAdapter` trait and `Clock` abstraction.
-- `src/herdr/`: Real `HerdrAdapter` implementation shelling out to `herdr agent prompt` and `herdr pane run`.
+- `src/scheduler/`: Min-heap priority queue and condition-variable sleeping thread; publishes the `DeliveryAdapter` trait (`src/scheduler/adapter.rs`), `Clock` abstraction, delivery-target auto-detection, and the process/file condition pollers.
+- `src/herdr/`: `RealHerdrAdapter`, shelling out to `herdr agent prompt` and `herdr pane run`.
+- `src/tmux/`: `TmuxAdapter`, shelling out to `tmux send-keys`.
 - `src/daemon/`: Background daemon process, PID lock, Unix domain socket server, lazy autostart, crash-recovery re-arm.
 - `src/cli/`: Clap CLI parser, subcommand dispatch, `--json` formatting, `src/main.rs`.
+
+`snuze` contains no network code: it is local-first by contract.

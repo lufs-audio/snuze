@@ -1,9 +1,10 @@
-use crate::kernel::{Alarm, DeliveryMode, SnuzeError};
-use crate::scheduler::{DeliveryOutcome, HerdrAdapter};
-use std::io::Read;
+use crate::kernel::{DeliveryMode, DeliveryTarget, SnuzeError};
+use crate::scheduler::adapter::{
+    run_command_with_timeout, DeliveryAdapter, DeliveryOutcome, SubprocessError,
+};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 /// Maximum characters stored in an alarm failure reason.
 const MAX_REASON_LEN: usize = 256;
@@ -120,17 +121,27 @@ impl RealHerdrAdapter {
     }
 }
 
-impl HerdrAdapter for RealHerdrAdapter {
-    fn deliver(&self, alarm: &Alarm) -> DeliveryOutcome {
+impl DeliveryAdapter for RealHerdrAdapter {
+    fn deliver(
+        &self,
+        target: &DeliveryTarget,
+        delivery: &DeliveryMode,
+    ) -> Result<DeliveryOutcome, SnuzeError> {
+        let DeliveryTarget::Herdr { pane_id } = target else {
+            return Err(SnuzeError::ConflictingFlags(
+                "RealHerdrAdapter can only deliver to a `herdr:` target".to_string(),
+            ));
+        };
+
         let mut cmd = Command::new(&self.herdr_path);
 
-        let is_prompt = match &alarm.delivery {
+        let is_prompt = match delivery {
             DeliveryMode::Prompt { text } => {
-                cmd.args(["agent", "prompt", &alarm.pane_id, text]);
+                cmd.args(["agent", "prompt", pane_id, text]);
                 true
             }
             DeliveryMode::Command { text } => {
-                cmd.args(["pane", "run", &alarm.pane_id, text]);
+                cmd.args(["pane", "run", pane_id, text]);
                 false
             }
         };
@@ -140,31 +151,31 @@ impl HerdrAdapter for RealHerdrAdapter {
         let output = match run_command_with_timeout(cmd, subprocess_timeout) {
             Ok(out) => out,
             Err(SubprocessError::Timeout) => {
-                return DeliveryOutcome::HerdrUnavailable("timeout".to_string());
+                return Ok(DeliveryOutcome::HerdrUnavailable("timeout".to_string()));
             }
             Err(SubprocessError::Spawn(e)) => {
-                return DeliveryOutcome::HerdrUnavailable(truncate_reason(
+                return Ok(DeliveryOutcome::HerdrUnavailable(truncate_reason(
                     &format!("failed to spawn herdr: {e}"),
                     MAX_REASON_LEN,
-                ));
+                )));
             }
             Err(SubprocessError::Io(e)) => {
-                return DeliveryOutcome::HerdrUnavailable(truncate_reason(
+                return Ok(DeliveryOutcome::HerdrUnavailable(truncate_reason(
                     &format!("io error waiting on herdr: {e}"),
                     MAX_REASON_LEN,
-                ));
+                )));
             }
         };
 
         let status = output.status;
         if status.success() {
-            return DeliveryOutcome::Delivered;
+            return Ok(DeliveryOutcome::Delivered);
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
 
-        match status.code() {
+        Ok(match status.code() {
             Some(2) => {
                 DeliveryOutcome::HerdrUnavailable("snuze invoked herdr incorrectly".to_string())
             }
@@ -208,56 +219,7 @@ impl HerdrAdapter for RealHerdrAdapter {
             None => {
                 DeliveryOutcome::HerdrUnavailable("herdr process terminated by signal".to_string())
             }
-        }
-    }
-}
-
-enum SubprocessError {
-    Timeout,
-    Spawn(std::io::Error),
-    Io(std::io::Error),
-}
-
-fn run_command_with_timeout(
-    mut cmd: Command,
-    timeout: Duration,
-) -> Result<std::process::Output, SubprocessError> {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-    let mut child = cmd.spawn().map_err(SubprocessError::Spawn)?;
-
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut stdout = Vec::new();
-                let mut stderr = Vec::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_end(&mut stdout);
-                }
-                if let Some(mut err) = child.stderr.take() {
-                    let _ = err.read_to_end(&mut stderr);
-                }
-                return Ok(std::process::Output {
-                    status,
-                    stdout,
-                    stderr,
-                });
-            }
-            Ok(None) => {
-                if start.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait(); // reap zombie process
-                    return Err(SubprocessError::Timeout);
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(SubprocessError::Io(e));
-            }
-        }
+        })
     }
 }
 

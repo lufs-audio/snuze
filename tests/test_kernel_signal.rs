@@ -8,15 +8,21 @@ use std::time::SystemTime;
 #[test]
 fn test_herdr_status_satisfied() {
     let watch_for = vec![HerdrWatchStatus::Done, HerdrWatchStatus::Working];
-    
+
     // Satisfied cases
     assert!(herdr_status_satisfied(&watch_for, HerdrWatchStatus::Done));
-    assert!(herdr_status_satisfied(&watch_for, HerdrWatchStatus::Working));
-    
+    assert!(herdr_status_satisfied(
+        &watch_for,
+        HerdrWatchStatus::Working
+    ));
+
     // Not satisfied cases
     assert!(!herdr_status_satisfied(&watch_for, HerdrWatchStatus::Idle));
-    assert!(!herdr_status_satisfied(&watch_for, HerdrWatchStatus::Blocked));
-    
+    assert!(!herdr_status_satisfied(
+        &watch_for,
+        HerdrWatchStatus::Blocked
+    ));
+
     // Empty watch list
     assert!(!herdr_status_satisfied(&[], HerdrWatchStatus::Done));
 }
@@ -77,7 +83,7 @@ fn test_alarm_trigger_backward_compat() {
         "fired_at": null,
         "failure_reason": null
     }"#;
-    
+
     let alarm: Alarm = serde_json::from_str(old_json).unwrap();
     assert_eq!(alarm.trigger, Trigger::Deadline);
 }
@@ -85,14 +91,14 @@ fn test_alarm_trigger_backward_compat() {
 #[test]
 fn test_error_mapping() {
     let err = SnuzeError::WatchedPaneNotFound("pane_123".to_string());
-    
+
     // Test Display format
     assert_eq!(err.to_string(), "watched Herdr pane not found: pane_123");
-    
+
     // Verify it doesn't match standard PaneNotFound display
     let other_err = SnuzeError::PaneNotFound("pane_123".to_string());
     assert_ne!(err.to_string(), other_err.to_string());
-    
+
     // Verify mapped ExitCode is TargetUnavailable
     let code: ExitCode = (&err).into();
     assert_eq!(code, ExitCode::TargetUnavailable);

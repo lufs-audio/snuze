@@ -1,18 +1,19 @@
 # `snuze` — Live Manual Testing Runbook
 
-This runbook documents manual verification procedures for scenarios requiring a live, interactive Herdr terminal environment and external Google Jules API access that cannot be executed in headless continuous integration (CI).
+This runbook documents manual verification procedures for scenarios requiring a live, interactive terminal multiplexer (`herdr` or `tmux`) that cannot be executed in headless continuous integration (CI).
 
 ---
 
 ## 1. Prerequisites
 
-1. **Herdr Multiplexer:** A running `herdr` session with at least one active agent pane (e.g., `w1:p1`) and one shell pane (e.g., `w1:p2`).
+1. **Terminal Multiplexer:** A running `herdr` session with at least one active agent pane (e.g., `w1:p1`) and one shell pane (e.g., `w1:p2`), and/or a running `tmux` session.
    ```bash
    herdr pane list
+   tmux list-panes
    ```
 2. **Environment Variables:**
    - `HERDR_PANE_ID`: Set automatically inside Herdr panes, or export manually for testing.
-   - `JULES_API_KEY`: Required for testing Google Jules condition-driven alarms.
+   - `TMUX` / `TMUX_PANE`: Set automatically inside tmux panes; used for delivery-target auto-detection.
 3. **Compiled Binary:**
    ```bash
    cargo build --release
@@ -66,34 +67,95 @@ This runbook documents manual verification procedures for scenarios requiring a 
 
 ---
 
-### Scenario C: Condition-Driven Jules Wake-Up
+### Scenario C: tmux Delivery and Target Auto-Detection
 
-1. **Verify Environment:**
+1. **Explicit tmux Target:**
    ```bash
-   echo $JULES_API_KEY
+   snuze set --after 10s --tmux %0 --prompt "tmux delivery verified" --json
    ```
-2. **Schedule Jules Condition Alarm:**
+   Confirm the prompt appears in the current tmux pane after 10 seconds.
+2. **Auto-Detected Target (inside tmux, no target flag):**
    ```bash
-   snuze set \
-     --jules "<JULES_SESSION_ID>" \
-     --condition any-completed \
-     --timeout 15m \
-     --poll-interval 15s \
-     --pane w1:p1 \
-     --prompt "Jules session {session_id} reached state {status}. PR: {pr_urls}" \
-     --json
-   ```
-3. **Inspect Progress:**
-   ```bash
+   snuze set --after 10s --prompt "auto-detected tmux delivery" --json
    snuze status <ALARM_ID> --json
-   # Confirm "last_known" array reflects real Jules API session status (e.g. IN_PROGRESS)
+   # Confirm "target": {"type":"tmux","target":"%N"} matches $TMUX_PANE
    ```
-4. **Observe Wake-Up on Completion:**
-   - When Jules completes or fails, confirm the template tokens `{session_id}`, `{status}`, and `{pr_urls}` interpolate with real values and deliver into pane `w1:p1`.
+3. **Unresolvable Target (outside Herdr and tmux):**
+   ```bash
+   env -u HERDR_ENV -u TMUX snuze set --after 10s --prompt "no target" --json
+   # Must exit 2 (USAGE) with an actionable message
+   ```
 
 ---
 
-### Scenario D: Live Crash Recovery (SIGKILL Fault Injection)
+### Scenario D: Process-Exit Trigger (`--pid`)
+
+1. **Start a Background Process:**
+   ```bash
+   sleep 30 &
+   PID=$!
+   ```
+2. **Schedule the Alarm:**
+   ```bash
+   snuze set --pid "$PID" --prompt "Process $PID exited" --tmux %0 --json
+   ```
+3. **Terminate the Process and Observe:**
+   ```bash
+   kill "$PID"
+   # The prompt must be delivered within the poll backoff window (<= ~1s initially).
+   snuze status <ALARM_ID> --json
+   # Status: fired
+   ```
+4. **Verify the Preflight Rejection:**
+   ```bash
+   snuze set --pid 999999 --prompt "never" --tmux %0 --json
+   # Must exit 3 (TargetUnavailable) with "process 999999 is not running"
+   ```
+
+---
+
+### Scenario E: File-Artifact Trigger (`--watch-file`)
+
+1. **Schedule an Existence Watch:**
+   ```bash
+   rm -f /tmp/snuze_take.json
+   snuze set --watch-file /tmp/snuze_take.json --prompt "take.json ready" --tmux %0 --json
+   ```
+2. **Write the Artifact from Another Shell:**
+   ```bash
+   echo '{}' > /tmp/snuze_take.json
+   ```
+   Confirm delivery within the poll backoff window.
+3. **Modified-Mode and Wildcards:**
+   ```bash
+   snuze set --watch-file '/tmp/snuze-take-*.json' --watch-mode modified --prompt "new take" --tmux %0 --json
+   echo '{}' > /tmp/snuze-take-001.json
+   ```
+
+---
+
+### Scenario F: Blocking `snuze wait`
+
+1. **Schedule and Block:**
+   ```bash
+   ID=$(snuze set --target wait --after 20s --json | jq -r .data.id)
+   snuze wait "$ID" --timeout 1m --json
+   echo "exit code: $?"
+   # Must block ~20s, then print a success envelope and exit 0.
+   ```
+2. **Non-Fired Terminal State:**
+   ```bash
+   ID=$(snuze set --target wait --after 10m --json | jq -r .data.id)
+   (sleep 1; snuze cancel "$ID" --json) &
+   snuze wait "$ID" --timeout 1m --json
+   echo "exit code: $?"
+   # Must exit 5 (ContractViolated): the alarm was canceled, not fired.
+   ```
+3. **Concurrency:** while a `snuze wait` is blocked, confirm `snuze list --json` and `snuze doctor` still respond immediately.
+
+---
+
+### Scenario G: Live Crash Recovery (SIGKILL Fault Injection)
 
 1. **Schedule a 5-Minute Alarm:**
    ```bash
@@ -116,7 +178,7 @@ This runbook documents manual verification procedures for scenarios requiring a 
 
 ---
 
-### Scenario E: Diagnostic Self-Check (`doctor`)
+### Scenario H: Diagnostic Self-Check (`doctor`)
 
 1. **Run Diagnostic Check:**
    ```bash
@@ -136,7 +198,7 @@ This runbook documents manual verification procedures for scenarios requiring a 
 
 ---
 
-### Scenario F: Herdr Event Subscription Push Wake-up (`--herdr-pane`)
+### Scenario I: Herdr Event Subscription Push Wake-up (`--herdr-pane`)
 
 1. **Schedule Watch on Sibling Pane:**
    ```bash
@@ -150,7 +212,7 @@ This runbook documents manual verification procedures for scenarios requiring a 
 
 ---
 
-### Scenario G: External Signal Dispatch (`snuze signal`)
+### Scenario J: External Signal Dispatch (`snuze signal`)
 
 1. **Schedule Signal-Triggered Alarm:**
    ```bash
@@ -166,7 +228,7 @@ This runbook documents manual verification procedures for scenarios requiring a 
 
 ---
 
-### Scenario H: Local Event Outbox Emission & Draining (`events drain`)
+### Scenario K: Local Event Outbox Emission & Draining (`events drain`)
 
 1. **Inspect Drained Events:**
    ```bash

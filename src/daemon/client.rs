@@ -38,11 +38,13 @@ impl DaemonClient {
     /// # Errors
     /// Returns `SnuzeError::DaemonUnavailable` on I/O or protocol serialization errors.
     pub fn send_request(&self, req: &Request) -> Result<Response, SnuzeError> {
-        let mut stream = UnixStream::connect(&self.sock_path)
-            .map_err(|e| SnuzeError::DaemonUnavailable(format!("could not connect to socket: {e}")))?;
+        let mut stream = UnixStream::connect(&self.sock_path).map_err(|e| {
+            SnuzeError::DaemonUnavailable(format!("could not connect to socket: {e}"))
+        })?;
 
-        let mut json = serde_json::to_string(req)
-            .map_err(|e| SnuzeError::DaemonUnavailable(format!("request serialization failed: {e}")))?;
+        let mut json = serde_json::to_string(req).map_err(|e| {
+            SnuzeError::DaemonUnavailable(format!("request serialization failed: {e}"))
+        })?;
         json.push('\n');
 
         stream
@@ -55,8 +57,9 @@ impl DaemonClient {
             .read_line(&mut line)
             .map_err(|e| SnuzeError::DaemonUnavailable(format!("read from socket failed: {e}")))?;
 
-        let resp: Response = serde_json::from_str(&line)
-            .map_err(|e| SnuzeError::DaemonUnavailable(format!("response deserialization failed: {e}")))?;
+        let resp: Response = serde_json::from_str(&line).map_err(|e| {
+            SnuzeError::DaemonUnavailable(format!("response deserialization failed: {e}"))
+        })?;
 
         Ok(resp)
     }
@@ -80,7 +83,10 @@ impl DaemonClient {
     ///
     /// # Errors
     /// Returns `SnuzeError::PersistFailed` or `SnuzeError::DaemonUnavailable`.
-    pub fn list_alarms(&self, status_filter: Option<AlarmStatus>) -> Result<Vec<Alarm>, SnuzeError> {
+    pub fn list_alarms(
+        &self,
+        status_filter: Option<AlarmStatus>,
+    ) -> Result<Vec<Alarm>, SnuzeError> {
         match self.send_request(&Request::ListAlarms(status_filter))? {
             Response::AlarmList(alarms) => Ok(alarms),
             Response::Error(msg) => Err(SnuzeError::PersistFailed(msg)),
@@ -133,6 +139,21 @@ impl DaemonClient {
                 "unexpected daemon response for signal_alarm".to_string(),
             )),
         }
+    }
+
+    /// Blocks on the daemon until the alarm reaches a terminal state.
+    ///
+    /// # Errors
+    /// Returns `SnuzeError::DaemonUnavailable` on IPC error.
+    pub fn wait_alarm(
+        &self,
+        alarm_id: &str,
+        timeout_secs: Option<u64>,
+    ) -> Result<Response, SnuzeError> {
+        self.send_request(&Request::WaitAlarm {
+            alarm_id: alarm_id.to_string(),
+            timeout_secs,
+        })
     }
 
     /// Health check ping to verify daemon responsiveness.

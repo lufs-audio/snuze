@@ -1,12 +1,12 @@
 pub mod args;
 pub mod dispatch;
 pub mod handlers;
-pub mod jules_parse;
 pub mod output;
+pub mod target_parse;
 pub mod watch_parse;
 
 pub use args::{Cli, Command};
 pub use dispatch::dispatch;
-pub use jules_parse::{parse_jules_condition, parse_jules_session_ids};
 pub use output::{format_error, format_success, CliResult, JsonError, JsonSuccess};
-pub use watch_parse::parse_watch_statuses;
+pub use target_parse::{parse_target_spec, validate_target};
+pub use watch_parse::{parse_file_watch_mode, parse_watch_statuses};

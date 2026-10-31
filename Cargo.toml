@@ -15,12 +15,16 @@ uuid = { version = "1.8", features = ["v7", "serde"] }
 fs2 = "0.4"
 dirs = "6.0"
 libc = "0.2.189"
-ureq = { version = "2.12", default-features = false, features = ["json", "tls"] }
 
 [dev-dependencies]
 tempfile = "3.10"
 
 [lints.clippy]
+# Newer clippy (1.99+) fires `assert_is_empty` on `assert!(x.is_empty())` and
+# suggests `assert_eq!(x, [] as [T; 0])`, which reads worse and drops the intent.
+# Allowed deliberately. NOTE: `pedantic = warn` + a `-D warnings` CI means every
+# new pedantic lint breaks the build -- pinning the toolchain is the durable fix.
+assert_is_empty = "allow"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"

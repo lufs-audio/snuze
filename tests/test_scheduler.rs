@@ -9,16 +9,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use snuze::jules::MockJulesAdapter;
-use snuze::kernel::{Alarm, AlarmStatus, DeliveryMode, Trigger};
-use snuze::scheduler::{
-    DeliveryOutcome, FakeClock, FiredEvent, HerdrAdapter, Scheduler,
-};
+use snuze::kernel::{Alarm, AlarmStatus, DeliveryMode, DeliveryTarget, SnuzeError, Trigger};
+use snuze::scheduler::{DeliveryAdapter, DeliveryOutcome, FakeClock, FiredEvent, Scheduler};
 
 #[derive(Clone, Default)]
 struct MockHerdrAdapter {
+    /// Scripted outcome, keyed by the delivery payload text.
     outcomes: Arc<Mutex<HashMap<String, DeliveryOutcome>>>,
-    delivered_alarms: Arc<Mutex<Vec<Alarm>>>,
+    deliveries: Arc<Mutex<Vec<(DeliveryTarget, DeliveryMode)>>>,
 }
 
 impl MockHerdrAdapter {
@@ -26,40 +24,51 @@ impl MockHerdrAdapter {
         Self::default()
     }
 
-    fn set_outcome(&self, alarm_id: &str, outcome: DeliveryOutcome) {
+    fn set_outcome(&self, payload_text: &str, outcome: DeliveryOutcome) {
         self.outcomes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(alarm_id.to_string(), outcome);
+            .insert(payload_text.to_string(), outcome);
     }
 
     fn delivered_count(&self) -> usize {
-        self.delivered_alarms
+        self.deliveries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
     }
 }
 
-impl HerdrAdapter for MockHerdrAdapter {
-    fn deliver(&self, alarm: &Alarm) -> DeliveryOutcome {
-        self.delivered_alarms
+impl DeliveryAdapter for MockHerdrAdapter {
+    fn deliver(
+        &self,
+        target: &DeliveryTarget,
+        delivery: &DeliveryMode,
+    ) -> Result<DeliveryOutcome, SnuzeError> {
+        self.deliveries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(alarm.clone());
+            .push((target.clone(), delivery.clone()));
 
-        self.outcomes
+        let text = match delivery {
+            DeliveryMode::Prompt { text } | DeliveryMode::Command { text } => text,
+        };
+
+        Ok(self
+            .outcomes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&alarm.id)
-            .unwrap_or(DeliveryOutcome::Delivered)
+            .remove(text)
+            .unwrap_or(DeliveryOutcome::Delivered))
     }
 }
 
 fn create_test_alarm(id: &str, deadline: SystemTime) -> Alarm {
     Alarm {
         id: id.to_string(),
-        pane_id: "pane_test".to_string(),
+        target: DeliveryTarget::Herdr {
+            pane_id: "pane_test".to_string(),
+        },
         created_by_pane: Some("pane_creator".to_string()),
         delivery: DeliveryMode::Prompt {
             text: format!("wake up {id}"),
@@ -81,10 +90,8 @@ fn setup_test_scheduler(
     grace_window: Duration,
 ) -> (Arc<Scheduler>, Receiver<FiredEvent>) {
     let (tx, rx): (Sender<FiredEvent>, Receiver<FiredEvent>) = channel();
-    let jules_adapter = Box::new(MockJulesAdapter::new(vec![]));
     let scheduler = Arc::new(Scheduler::new(
         Box::new(adapter),
-        jules_adapter,
         Box::new(clock),
         grace_window,
         Box::new(move |event| {
@@ -105,7 +112,8 @@ fn test_scheduler_fire_success() {
     let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
     let clock = FakeClock::new(base_time);
     let adapter = MockHerdrAdapter::new();
-    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
+    let (scheduler, rx) =
+        setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
 
     let deadline = base_time + Duration::from_secs(30);
     scheduler.arm(create_test_alarm("alarm-1", deadline));
@@ -142,7 +150,8 @@ fn test_scheduler_cancel_pending() {
     let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
     let clock = FakeClock::new(base_time);
     let adapter = MockHerdrAdapter::new();
-    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
+    let (scheduler, rx) =
+        setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
 
     let deadline = base_time + Duration::from_secs(30);
     scheduler.arm(create_test_alarm("alarm-cancel", deadline));
@@ -152,12 +161,19 @@ fn test_scheduler_cancel_pending() {
     assert!(canceled, "cancel should return true for pending alarm");
 
     let cancel_missing = scheduler.cancel("non-existent");
-    assert!(!cancel_missing, "cancel should return false for unknown alarm");
+    assert!(
+        !cancel_missing,
+        "cancel should return false for unknown alarm"
+    );
 
     // Advance far past deadline
     clock.advance(Duration::from_secs(1000));
     assert!(rx.recv_timeout(Duration::from_millis(50)).is_err());
-    assert_eq!(adapter.delivered_count(), 0, "zero deliver calls after cancellation");
+    assert_eq!(
+        adapter.delivered_count(),
+        0,
+        "zero deliver calls after cancellation"
+    );
 }
 
 #[test]
@@ -165,7 +181,8 @@ fn test_scheduler_deadline_ordering() {
     let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
     let clock = FakeClock::new(base_time);
     let adapter = MockHerdrAdapter::new();
-    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
+    let (scheduler, rx) =
+        setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
 
     // Arm alarms out of order, 1ms apart
     let d1 = base_time + Duration::from_millis(100);
@@ -226,7 +243,11 @@ fn test_scheduler_missed_past_grace_window_at_arm_time() {
         _ => panic!("expected Missed event, got {event:?}"),
     }
 
-    assert_eq!(adapter.delivered_count(), 0, "no deliver call for missed alarm");
+    assert_eq!(
+        adapter.delivered_count(),
+        0,
+        "no deliver call for missed alarm"
+    );
 }
 
 #[test]
@@ -258,7 +279,7 @@ fn test_scheduler_delivery_failure_variants() {
         let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
         let clock = FakeClock::new(base_time);
         let adapter = MockHerdrAdapter::new();
-        adapter.set_outcome(id, outcome);
+        adapter.set_outcome(&format!("wake up {id}"), outcome);
 
         let (scheduler, rx) =
             setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
@@ -271,7 +292,10 @@ fn test_scheduler_delivery_failure_variants() {
             .expect("expected event");
 
         match event {
-            FiredEvent::Failed { id: event_id, reason } => {
+            FiredEvent::Failed {
+                id: event_id,
+                reason,
+            } => {
                 assert_eq!(event_id, id);
                 assert_eq!(reason, expected_reason);
             }
@@ -285,7 +309,8 @@ fn test_scheduler_cancel_next_due_alarm_rearms_next() {
     let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
     let clock = FakeClock::new(base_time);
     let adapter = MockHerdrAdapter::new();
-    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
+    let (scheduler, rx) =
+        setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
 
     let d_early = base_time + Duration::from_secs(10);
     let d_late = base_time + Duration::from_secs(30);
@@ -319,36 +344,16 @@ struct BlockingHerdrAdapter {
     rx_release: Mutex<Receiver<()>>,
 }
 
-impl HerdrAdapter for BlockingHerdrAdapter {
-    fn deliver(&self, _alarm: &Alarm) -> DeliveryOutcome {
-        let _ = self.tx_start.send(());
-        let rx = self.rx_release.lock().unwrap();
-        let _ = rx.recv();
-        DeliveryOutcome::Delivered
-    }
-}
-
-struct BlockingJulesAdapter {
-    tx_start: Sender<()>,
-    rx_release: Mutex<Receiver<()>>,
-}
-
-impl snuze::jules::JulesAdapter for BlockingJulesAdapter {
-    fn check_sessions(
+impl DeliveryAdapter for BlockingHerdrAdapter {
+    fn deliver(
         &self,
-        session_ids: &[String],
-    ) -> Result<Vec<snuze::kernel::JulesSessionState>, snuze::kernel::SnuzeError> {
+        _target: &DeliveryTarget,
+        _delivery: &DeliveryMode,
+    ) -> Result<DeliveryOutcome, SnuzeError> {
         let _ = self.tx_start.send(());
         let rx = self.rx_release.lock().unwrap();
         let _ = rx.recv();
-        Ok(session_ids
-            .iter()
-            .map(|id| snuze::kernel::JulesSessionState {
-                session_id: id.clone(),
-                state: snuze::kernel::JulesState::InProgress,
-                pull_request_url: None,
-            })
-            .collect())
+        Ok(DeliveryOutcome::Delivered)
     }
 }
 
@@ -365,10 +370,8 @@ fn test_scheduler_cancel_in_flight_delivery_suppresses_fired_event() {
     };
 
     let (tx, rx): (Sender<FiredEvent>, Receiver<FiredEvent>) = channel();
-    let jules_adapter = Box::new(MockJulesAdapter::new(vec![]));
     let scheduler = Arc::new(Scheduler::new(
         Box::new(adapter),
-        jules_adapter,
         Box::new(clock.clone()),
         Duration::from_mins(10),
         Box::new(move |event| {
@@ -381,7 +384,10 @@ fn test_scheduler_cancel_in_flight_delivery_suppresses_fired_event() {
         sched_bg.run();
     });
 
-    scheduler.arm(create_test_alarm("inflight-alarm", base_time + Duration::from_secs(10)));
+    scheduler.arm(create_test_alarm(
+        "inflight-alarm",
+        base_time + Duration::from_secs(10),
+    ));
     clock.advance(Duration::from_secs(10));
 
     // Wait until deliver() is actively executing
@@ -404,89 +410,3 @@ fn test_scheduler_cancel_in_flight_delivery_suppresses_fired_event() {
         "in-flight canceled alarm should not emit FiredEvent"
     );
 }
-
-#[test]
-fn test_scheduler_cancel_in_flight_jules_poll_suppresses_progress_and_rearm() {
-    use snuze::kernel::JulesCondition;
-
-    let (tx_start, rx_start) = channel();
-    let (tx_release, rx_release) = channel();
-
-    let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
-    let clock = FakeClock::new(base_time);
-    let herdr_adapter = MockHerdrAdapter::new();
-    let jules_adapter = Box::new(BlockingJulesAdapter {
-        tx_start,
-        rx_release: Mutex::new(rx_release),
-    });
-
-    let (tx, rx): (Sender<FiredEvent>, Receiver<FiredEvent>) = channel();
-    let scheduler = Arc::new(Scheduler::new(
-        Box::new(herdr_adapter),
-        jules_adapter,
-        Box::new(clock.clone()),
-        Duration::from_mins(10),
-        Box::new(move |event| {
-            let _ = tx.send(event);
-        }),
-    ));
-
-    let sched_bg = Arc::clone(&scheduler);
-    thread::spawn(move || {
-        sched_bg.run();
-    });
-
-    let jules_alarm = Alarm {
-        id: "jules-inflight".to_string(),
-        pane_id: "pane_test".to_string(),
-        created_by_pane: None,
-        delivery: DeliveryMode::Prompt {
-            text: "Jules wake up".to_string(),
-        },
-        label: None,
-        created_at: base_time,
-        deadline: base_time + Duration::from_secs(10),
-        status: AlarmStatus::Pending,
-        fired_at: None,
-        failure_reason: None,
-        trigger: Trigger::JulesCondition {
-            session_ids: vec!["sess-1".to_string()],
-            condition: JulesCondition::AllTerminal,
-            poll_interval_secs: 30,
-            timeout_at: base_time + Duration::from_mins(10),
-            last_known: vec![],
-        },
-        schema_version: 1,
-    };
-
-    scheduler.arm(jules_alarm);
-    clock.advance(Duration::from_secs(10));
-
-    // Wait until check_sessions() is actively executing
-    rx_start
-        .recv_timeout(Duration::from_millis(500))
-        .expect("check_sessions did not start");
-
-    // Cancel while in-flight
-    assert!(
-        scheduler.cancel("jules-inflight"),
-        "cancel should return true for in-flight jules alarm"
-    );
-
-    // Unblock check_sessions()
-    tx_release.send(()).unwrap();
-
-    // Verify no Progress event is delivered and alarm does not rearm
-    assert!(
-        rx.recv_timeout(Duration::from_millis(100)).is_err(),
-        "in-flight canceled jules alarm should not emit Progress event"
-    );
-
-    // Advance past subsequent poll and timeout intervals to confirm no ghost wakes
-    clock.advance(Duration::from_secs(1000));
-    assert!(
-        rx.recv_timeout(Duration::from_millis(100)).is_err(),
-        "canceled jules alarm must not fire later"
-    );
-}
-

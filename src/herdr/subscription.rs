@@ -149,9 +149,7 @@ impl HerdrEventListener {
             (pid, st)
         } else {
             let pid = envelope.pane_id;
-            let st = envelope
-                .agent_status
-                .or(envelope.new_status);
+            let st = envelope.agent_status.or(envelope.new_status);
             (pid, st)
         };
 
@@ -166,9 +164,7 @@ impl HerdrEventListener {
             "blocked" => HerdrWatchStatus::Blocked,
             "working" => HerdrWatchStatus::Working,
             other => {
-                eprintln!(
-                    "Unrecognized Herdr status '{other}' for pane '{pane_id}', ignoring"
-                );
+                eprintln!("Unrecognized Herdr status '{other}' for pane '{pane_id}', ignoring");
                 return;
             }
         };

@@ -33,6 +33,10 @@ pub struct OutboxEvent {
     pub created_by_pane: Option<String>,
     pub label: Option<String>,
     pub failure_reason: Option<String>,
+    /// Destination string for the alarm's `DeliveryTarget` (`pane_id` for Herdr,
+    /// the tmux target, or the command body). The field name is retained for
+    /// backwards compatibility with the Phase 3 ledger schema; it is no longer
+    /// necessarily a pane id.
     pub delivery_target_pane: String,
     pub artifact_refs: Vec<String>,
 }
@@ -76,7 +80,7 @@ impl OutboxEvent {
             created_by_pane: alarm.created_by_pane.clone(),
             label: alarm.label.clone(),
             failure_reason: alarm.failure_reason.clone(),
-            delivery_target_pane: alarm.pane_id.clone(),
+            delivery_target_pane: alarm.target.destination(),
             artifact_refs: vec![],
         }
     }
@@ -162,7 +166,11 @@ impl EventOutbox {
         let old_content = match std::fs::read_to_string(&self.path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(SnuzeError::PersistFailed(format!("failed to read outbox: {e}"))),
+            Err(e) => {
+                return Err(SnuzeError::PersistFailed(format!(
+                    "failed to read outbox: {e}"
+                )))
+            }
         };
 
         let temp_name = format!("events.ndjson.tmp.{}", uuid::Uuid::now_v7());

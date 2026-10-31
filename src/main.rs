@@ -20,6 +20,7 @@ fn main() {
         },
         Command::Doctor(args) => args.json,
         Command::Signal(args) => args.json,
+        Command::Wait(args) => args.json,
     };
 
     let result = dispatch(cli.command, &state_dir);

@@ -1,18 +1,18 @@
 use crate::cli::args::{
     CancelArgs, DaemonAction, DaemonArgs, DoctorArgs, EventsAction, EventsArgs, ListArgs, SetArgs,
-    SignalArgs, StatusArgs,
+    SignalArgs, StatusArgs, WaitArgs,
 };
-use crate::cli::jules_parse::{parse_jules_condition, parse_jules_session_ids};
 use crate::cli::output::CliResult;
-use crate::cli::watch_parse::parse_watch_statuses;
+use crate::cli::target_parse::{parse_target_spec, validate_target};
+use crate::cli::watch_parse::{parse_file_watch_mode, parse_watch_statuses};
+use crate::daemon::protocol::Response;
 use crate::daemon::{Daemon, DaemonClient};
 use crate::herdr::RealHerdrAdapter;
-use crate::jules::adapter::RealJulesAdapter;
-use crate::jules::JulesAdapter;
 use crate::kernel::duration::parse_duration;
 use crate::kernel::{
-    Alarm, AlarmStatus, DeliveryMode, JulesCondition, SnuzeError, Trigger,
+    Alarm, AlarmStatus, DeliveryMode, DeliveryTarget, FileWatchMode, SnuzeError, Trigger,
 };
+use crate::scheduler::{detect_default_target, is_process_running};
 use crate::store::AlarmStore;
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -33,11 +33,6 @@ fn format_alarm_human(alarm: &Alarm) -> String {
     let mut status_str = format!("{:?}", alarm.status);
     if alarm.status == AlarmStatus::Pending {
         match &alarm.trigger {
-            Trigger::JulesCondition { last_known, .. } => {
-                for s in last_known {
-                    let _ = write!(status_str, "\n  {}: {}", s.session_id, s.state.as_str());
-                }
-            }
             Trigger::HerdrStatus {
                 watched_pane_id,
                 watch_for,
@@ -71,20 +66,100 @@ fn format_alarm_human(alarm: &Alarm) -> String {
             Trigger::ExternalSignal { match_key, .. } => {
                 let _ = write!(status_str, "\n  waiting for signal '{match_key}'");
             }
+            Trigger::ProcessExit { pid, .. } => {
+                let _ = write!(status_str, "\n  waiting for process {pid} to exit");
+            }
+            Trigger::FileArtifact { path, mode, .. } => {
+                let _ = write!(
+                    status_str,
+                    "\n  waiting for {} to be {}",
+                    path.display(),
+                    mode.as_str()
+                );
+            }
             Trigger::Deadline => {}
         }
     }
 
     format!(
         "ID: {}\n\
-         Pane: {}\n\
+         Target: {}\n\
          Created By Pane: {}\n\
          Status: {}\n\
          Delivery: {}\n\
          Label: {}\n\
          Failure Reason: {}",
-        alarm.id, alarm.pane_id, caller_str, status_str, mode_str, label_str, failure_str
+        alarm.id,
+        alarm.target.spec(),
+        caller_str,
+        status_str,
+        mode_str,
+        label_str,
+        failure_str
     )
+}
+
+/// Resolves the delivery target from explicit flags, falling back to environment
+/// auto-detection (`$HERDR_ENV`/`$HERDR_PANE_ID`, then `$TMUX`).
+///
+/// # Errors
+/// Returns `SnuzeError::ConflictingFlags` when more than one target flag is given,
+/// when a `--target` spec is malformed, or when no target can be determined.
+fn resolve_delivery_target(args: &SetArgs) -> Result<DeliveryTarget, SnuzeError> {
+    let mut explicit: Vec<(&str, DeliveryTarget)> = Vec::new();
+
+    if let Some(spec) = args.target.as_deref() {
+        explicit.push(("--target", parse_target_spec(spec)?));
+    }
+    if let Some(pane) = args.pane.as_deref() {
+        explicit.push((
+            "--pane",
+            DeliveryTarget::Herdr {
+                pane_id: pane.to_string(),
+            },
+        ));
+    }
+    if let Some(pane) = args.herdr.as_deref() {
+        explicit.push((
+            "--herdr",
+            DeliveryTarget::Herdr {
+                pane_id: pane.to_string(),
+            },
+        ));
+    }
+    if let Some(tmux_target) = args.tmux.as_deref() {
+        explicit.push((
+            "--tmux",
+            DeliveryTarget::Tmux {
+                target: tmux_target.to_string(),
+            },
+        ));
+    }
+
+    if explicit.len() > 1 {
+        let names = explicit
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(SnuzeError::ConflictingFlags(format!(
+            "at most one of --target, --pane, --herdr, or --tmux may be given (got {names})"
+        )));
+    }
+
+    let target = if let Some((_, target)) = explicit.into_iter().next() {
+        target
+    } else {
+        detect_default_target().ok_or_else(|| {
+            SnuzeError::ConflictingFlags(
+                "no delivery target: pass --pane, --herdr, --tmux, or --target, or run inside Herdr ($HERDR_ENV=1) or tmux ($TMUX)"
+                    .to_string(),
+            )
+        })?
+    };
+
+    validate_target(&target)?;
+    Ok(target)
 }
 
 /// Handles scheduling a new alarm.
@@ -94,55 +169,43 @@ fn format_alarm_human(alarm: &Alarm) -> String {
 #[allow(clippy::too_many_lines)]
 pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
     let is_after = args.after.is_some();
-    let is_jules = args.jules.is_some();
     let is_signal = args.signal.is_some();
     let is_herdr_pane = args.herdr_pane.is_some();
+    let is_pid = args.pid.is_some();
+    let is_watch_file = args.watch_file.is_some();
 
     // 1. Exactly one trigger mode must be present
-    let mode_count = [is_after, is_jules, is_signal, is_herdr_pane]
+    let mode_count = [is_after, is_signal, is_herdr_pane, is_pid, is_watch_file]
         .into_iter()
         .filter(|&x| x)
         .count();
 
     if mode_count != 1 {
         return Err(SnuzeError::ConflictingFlags(
-            "exactly one of --after, --jules, --signal, or --herdr-pane is required".to_string(),
+            "exactly one of --after, --signal, --herdr-pane, --pid, or --watch-file is required"
+                .to_string(),
         ));
     }
 
-    // 2. Delivery mode validation
-    if is_jules {
-        if args.command.is_some() {
-            return Err(SnuzeError::ConflictingFlags(
-                "--command is not supported with --jules (condition mode does not support command delivery)".to_string(),
-            ));
-        }
-        if args.prompt.is_none() {
-            return Err(SnuzeError::ConflictingFlags(
-                "--prompt is required with --jules".to_string(),
-            ));
-        }
-    } else if (args.prompt.is_some() && args.command.is_some())
-        || (args.prompt.is_none() && args.command.is_none())
-    {
+    // `--watch-mode` only means something alongside `--watch-file`.
+    if args.watch_mode.is_some() && !is_watch_file {
+        return Err(SnuzeError::ConflictingFlags(
+            "--watch-mode requires --watch-file".to_string(),
+        ));
+    }
+
+    // 2. Resolve the delivery target (explicit flag wins; else auto-detect from env)
+    let target = resolve_delivery_target(&args)?;
+
+    // 3. Delivery mode validation
+    if args.prompt.is_some() && args.command.is_some() {
         return Err(SnuzeError::ConflictingFlags(
             "exactly one of --prompt or --command is required".to_string(),
         ));
     }
 
-    // 3. Required flags per mode
-    if is_jules {
-        if args.condition.is_none() {
-            return Err(SnuzeError::ConflictingFlags(
-                "--condition is required with --jules".to_string(),
-            ));
-        }
-        if args.timeout.is_none() {
-            return Err(SnuzeError::ConflictingFlags(
-                "--timeout is required with --jules".to_string(),
-            ));
-        }
-    } else if is_signal {
+    // 4. Required flags per mode
+    if is_signal {
         if args.timeout.is_none() {
             return Err(SnuzeError::ConflictingFlags(
                 "--timeout is required with --signal".to_string(),
@@ -161,17 +224,7 @@ pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
         }
     }
 
-    // 4. Parse mode-specific sub-options
-    let parsed_condition = if is_jules {
-        if let Some(ref cond_str) = args.condition {
-            Some(parse_jules_condition(cond_str)?)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
+    // 5. Parse mode-specific sub-options
     let parsed_watch_statuses = if is_herdr_pane {
         if let Some(ref watch_str) = args.watch_for {
             Some(parse_watch_statuses(watch_str)?)
@@ -182,83 +235,73 @@ pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
         None
     };
 
-    // 5. Parse duration / timeout and poll-interval
-    let (after_duration, timeout_duration, poll_interval_duration) = if is_jules {
+    // 6. Parse duration / timeout
+    let (after_duration, timeout_duration) = if is_signal || is_herdr_pane {
         let timeout_str = args.timeout.as_deref().unwrap_or_default();
         let timeout_dur = parse_duration(timeout_str)?;
-        let poll_interval_dur = if let Some(ref pi) = args.poll_interval {
-            parse_duration(pi)?
-        } else {
-            std::time::Duration::from_secs(30)
+        (None, Some(timeout_dur))
+    } else if is_pid || is_watch_file {
+        // `--timeout` is optional for local condition triggers; default ceiling is 24h.
+        let timeout_dur = match args.timeout.as_deref() {
+            Some(raw) => parse_duration(raw)?,
+            None => std::time::Duration::from_hours(24),
         };
-        (None, Some(timeout_dur), Some(poll_interval_dur))
-    } else if is_signal || is_herdr_pane {
-        let timeout_str = args.timeout.as_deref().unwrap_or_default();
-        let timeout_dur = parse_duration(timeout_str)?;
-        (None, Some(timeout_dur), None)
+        (None, Some(timeout_dur))
     } else {
         let after_str = args.after.as_deref().unwrap_or_default();
         let after_dur = parse_duration(after_str)?;
-        (Some(after_dur), None, None)
+        (Some(after_dur), None)
     };
 
-    // 6. Split --jules session IDs
-    let session_ids = if is_jules {
-        let jules_str = args.jules.as_deref().unwrap_or_default();
-        Some(parse_jules_session_ids(jules_str)?)
-    } else {
-        None
-    };
-
-    // Pre-flight watched pane check
-    let adapter = RealHerdrAdapter::new()?;
+    // Pre-flight watched pane check (Herdr-only trigger; unchanged)
     if is_herdr_pane {
+        let adapter = RealHerdrAdapter::new()?;
         let watched_pane_id = args.herdr_pane.as_deref().unwrap_or_default();
         if !adapter.pane_exists(watched_pane_id)? {
             return Err(SnuzeError::WatchedPaneNotFound(watched_pane_id.to_string()));
         }
     }
 
-    // Pre-flight delivery pane check
-    if !adapter.pane_exists(&args.pane)? {
-        return Err(SnuzeError::PaneNotFound(args.pane));
+    // Pre-flight delivery target check. Only Herdr targets can be validated up
+    // front; tmux/command availability is reported at delivery time.
+    if let DeliveryTarget::Herdr { pane_id } = &target {
+        let adapter = RealHerdrAdapter::new()?;
+        if !adapter.pane_exists(pane_id)? {
+            return Err(SnuzeError::PaneNotFound(pane_id.clone()));
+        }
     }
 
-    // Pre-flight Jules check
-    if is_jules {
-        let jules_adapter = RealJulesAdapter::new()?;
-        if let Some(ref ids) = session_ids {
-            jules_adapter.check_sessions(ids)?;
+    // Pre-flight: a monitored PID must exist at schedule time, otherwise the alarm
+    // could only ever time out.
+    if let Some(pid) = args.pid {
+        if !is_process_running(pid) {
+            return Err(SnuzeError::ProcessNotFound(pid));
         }
     }
 
     let created_by_pane = std::env::var("HERDR_PANE_ID").ok();
 
-    let delivery = if let Some(prompt) = args.prompt {
-        DeliveryMode::Prompt { text: prompt }
-    } else if let Some(command) = args.command {
-        DeliveryMode::Command { text: command }
+    let delivery = if let Some(prompt) = args.prompt.as_ref() {
+        DeliveryMode::Prompt {
+            text: prompt.clone(),
+        }
+    } else if let Some(command) = args.command.as_ref() {
+        DeliveryMode::Command {
+            text: command.clone(),
+        }
+    } else if matches!(target, DeliveryTarget::Wait) {
+        // A `wait` target delivers nothing, so a payload is optional.
+        DeliveryMode::Prompt {
+            text: String::new(),
+        }
     } else {
         return Err(SnuzeError::ConflictingFlags(
-            "missing delivery payload".to_string(),
+            "exactly one of --prompt or --command is required".to_string(),
         ));
     };
 
     let now = SystemTime::now();
-    let (deadline, trigger, schema_version) = if is_jules {
-        let timeout_dur = timeout_duration.unwrap_or(std::time::Duration::from_mins(5));
-        let poll_dur = poll_interval_duration.unwrap_or(std::time::Duration::from_secs(30));
-        let timeout_at = now + timeout_dur;
-        let next_check = now + poll_dur;
-        let trigger = Trigger::JulesCondition {
-            session_ids: session_ids.unwrap_or_default(),
-            condition: parsed_condition.unwrap_or(JulesCondition::AllTerminal),
-            poll_interval_secs: poll_dur.as_secs(),
-            timeout_at,
-            last_known: Vec::new(),
-        };
-        (next_check, trigger, 2)
-    } else if is_signal {
+    let (deadline, trigger, schema_version) = if is_signal {
         let timeout_dur = timeout_duration.unwrap_or(std::time::Duration::from_mins(5));
         let timeout_at = now + timeout_dur;
         let trigger = Trigger::ExternalSignal {
@@ -266,6 +309,26 @@ pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
             timeout_at,
         };
         (timeout_at, trigger, 3)
+    } else if is_pid || is_watch_file {
+        let timeout_dur = timeout_duration.unwrap_or_else(|| std::time::Duration::from_hours(24));
+        let timeout_at = now + timeout_dur;
+        let trigger = if is_pid {
+            Trigger::ProcessExit {
+                pid: args.pid.unwrap_or_default(),
+                timeout_at,
+            }
+        } else {
+            let mode = match args.watch_mode.as_deref() {
+                Some(raw) => parse_file_watch_mode(raw)?,
+                None => FileWatchMode::Exists,
+            };
+            Trigger::FileArtifact {
+                path: args.watch_file.clone().unwrap_or_default(),
+                mode,
+                timeout_at,
+            }
+        };
+        (timeout_at, trigger, 5)
     } else if is_herdr_pane {
         let timeout_dur = timeout_duration.unwrap_or(std::time::Duration::from_mins(5));
         let timeout_at = now + timeout_dur;
@@ -283,7 +346,7 @@ pub fn handle_set(args: SetArgs, state_dir: &Path) -> CliResult {
 
     let alarm = Alarm {
         id: Uuid::now_v7().to_string(),
-        pane_id: args.pane,
+        target,
         created_by_pane,
         delivery,
         label: args.label,
@@ -362,6 +425,43 @@ pub fn handle_signal(args: &SignalArgs, state_dir: &Path) -> CliResult {
     }
 }
 
+/// Handles `snuze wait <ALARM_ID>`: blocks on the daemon socket until the alarm
+/// reaches a terminal state.
+///
+/// # Errors
+/// Returns `SnuzeError::AlarmNotFound` if the alarm does not exist,
+/// `SnuzeError::AlarmNotFired` if it ends in any non-`Fired` terminal state or the
+/// wait times out, or `SnuzeError::DaemonUnavailable` on IPC failure.
+pub fn handle_wait(args: &WaitArgs, state_dir: &Path) -> CliResult {
+    let timeout_secs = match args.timeout.as_deref() {
+        Some(raw) => Some(parse_duration(raw)?.as_secs()),
+        None => None,
+    };
+
+    let client = DaemonClient::connect(state_dir)?;
+
+    match client.wait_alarm(&args.alarm_id, timeout_secs)? {
+        Response::AlarmFired { alarm_id } => {
+            if args.json {
+                Ok(serde_json::json!({
+                    "alarm_id": alarm_id,
+                    "status": "fired",
+                }))
+            } else {
+                Ok(serde_json::Value::String(format!("Alarm {alarm_id} fired")))
+            }
+        }
+        Response::NotFound(id) => Err(SnuzeError::AlarmNotFound(id)),
+        Response::Error(reason) => Err(SnuzeError::AlarmNotFired {
+            id: args.alarm_id.clone(),
+            reason,
+        }),
+        _ => Err(SnuzeError::DaemonUnavailable(
+            "unexpected daemon response for wait_alarm".to_string(),
+        )),
+    }
+}
+
 /// Handles listing alarms.
 ///
 /// # Errors
@@ -407,7 +507,10 @@ pub fn handle_list(args: &ListArgs, state_dir: &Path) -> CliResult {
             let _ = writeln!(
                 output,
                 "{:<38} {:<12} {:<10} {:<15}",
-                alarm.id, alarm.pane_id, status, label
+                alarm.id,
+                alarm.target.destination(),
+                status,
+                label
             );
         }
         Ok(serde_json::Value::String(output))
@@ -477,7 +580,9 @@ pub fn handle_daemon(args: &DaemonArgs, state_dir: &Path) -> CliResult {
         DaemonAction::Start { foreground } => {
             if foreground {
                 Daemon::run_foreground(state_dir)?;
-                Ok(serde_json::Value::String("Daemon exited cleanly".to_string()))
+                Ok(serde_json::Value::String(
+                    "Daemon exited cleanly".to_string(),
+                ))
             } else {
                 Daemon::ensure_running(state_dir)?;
                 Ok(serde_json::Value::String("Daemon started".to_string()))
@@ -547,10 +652,7 @@ pub fn handle_doctor(args: &DoctorArgs, state_dir: &Path) -> CliResult {
         Some(true)
     })()
     .unwrap_or(false);
-    check_results.insert(
-        "state_dir_writable",
-        serde_json::json!(state_dir_writable),
-    );
+    check_results.insert("state_dir_writable", serde_json::json!(state_dir_writable));
 
     let mut counts = HashMap::new();
     let mut corrupt_alarms = Vec::new();
@@ -623,7 +725,11 @@ pub fn handle_doctor(args: &DoctorArgs, state_dir: &Path) -> CliResult {
              Missed Alarms: {}\n\
              Corrupt Alarms: {}",
             herdr_binary,
-            if herdr_socket_reachable { "reachable" } else { "unreachable" },
+            if herdr_socket_reachable {
+                "reachable"
+            } else {
+                "unreachable"
+            },
             if daemon_running { "running" } else { "stopped" },
             if state_dir_writable { "yes" } else { "no" },
             pending_count,
@@ -660,7 +766,10 @@ pub fn handle_events(args: &EventsArgs, state_dir: &Path) -> CliResult {
                     let _ = writeln!(
                         output,
                         "- [{}] {} {} ({})",
-                        event.alarm_id, event.trigger_kind, event.status, event.delivery_target_pane
+                        event.alarm_id,
+                        event.trigger_kind,
+                        event.status,
+                        event.delivery_target_pane
                     );
                 }
                 Ok(serde_json::Value::String(output.trim_end().to_string()))
