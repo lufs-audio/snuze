@@ -8,7 +8,6 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
 #![allow(clippy::indexing_slicing)]
-
 #![allow(clippy::panic)]
 
 use snuze::snuze_herdr::RealHerdrAdapter;

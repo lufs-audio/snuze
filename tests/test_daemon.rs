@@ -194,7 +194,10 @@ fn test_daemon_sigkill_fault_injection_and_rearm() -> Result<(), Box<dyn std::er
         .arg("--foreground")
         .spawn()?;
 
-    assert!(wait_for_daemon(&state_dir), "daemon child process failed to start");
+    assert!(
+        wait_for_daemon(&state_dir),
+        "daemon child process failed to start"
+    );
 
     let client = DaemonClient::connect(&state_dir)?;
     let alarm = create_test_alarm();
@@ -205,7 +208,10 @@ fn test_daemon_sigkill_fault_injection_and_rearm() -> Result<(), Box<dyn std::er
     let _ = child1.wait()?;
 
     // Verify daemon process is dead but left dirty disk state (PID file remains)
-    assert!(state_dir.join("daemon.pid").exists(), "PID file should remain after SIGKILL");
+    assert!(
+        state_dir.join("daemon.pid").exists(),
+        "PID file should remain after SIGKILL"
+    );
 
     // 3. Spawn replacement daemon process against the same state dir
     let mut child2 = std::process::Command::new(env!("CARGO_BIN_EXE_snuze"))
@@ -217,7 +223,10 @@ fn test_daemon_sigkill_fault_injection_and_rearm() -> Result<(), Box<dyn std::er
         .arg("--foreground")
         .spawn()?;
 
-    assert!(wait_for_daemon(&state_dir), "replacement daemon failed to start after SIGKILL");
+    assert!(
+        wait_for_daemon(&state_dir),
+        "replacement daemon failed to start after SIGKILL"
+    );
 
     // 4. Verify crash-recovery re-arm on boot from durable store
     let client2 = DaemonClient::connect(&state_dir)?;

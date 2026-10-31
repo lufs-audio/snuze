@@ -2,14 +2,35 @@
 _.python.venv = ".venv"
 _.path = ["./node_modules/.bin", "./.venv/bin"]
 
+# Fail-closed on purpose. The scaffolded template ended every task with `true`,
+# so `mise run test` could never fail -- CI read green while testing nothing.
+# A detected runner that fails must fail the task, and detecting nothing must
+# also fail rather than silently pass.
 [tasks.test]
 description = "Run project test suite"
-run = "test -f pyproject.toml && uv run pytest; test -f package.json && npm test; test -f Cargo.toml && cargo test; true"
+run = """
+set -e
+ran=0
+if [ -f pyproject.toml ]; then uv run pytest; ran=1; fi
+if [ -f package.json ]; then npm test; ran=1; fi
+if [ -f Cargo.toml ]; then cargo test; ran=1; fi
+if [ "$ran" = "0" ]; then echo "mise: no test runner detected"; exit 1; fi
+"""
 
 [tasks.check]
 description = "Run linters and format checks"
-run = "test -f pyproject.toml && uv run ruff check .; test -f Cargo.toml && cargo clippy; true"
+run = """
+set -e
+ran=0
+if [ -f pyproject.toml ]; then uv run ruff check .; ran=1; fi
+if [ -f Cargo.toml ]; then cargo clippy --all-targets --all-features -- -D warnings -A clippy::pedantic; ran=1; fi
+if [ "$ran" = "0" ]; then echo "mise: no checker detected"; exit 1; fi
+"""
 
 [tasks.fmt]
 description = "Auto-format code"
-run = "test -f pyproject.toml && uv run ruff format .; test -f Cargo.toml && cargo fmt; true"
+run = """
+set -e
+if [ -f pyproject.toml ]; then uv run ruff format .; fi
+if [ -f Cargo.toml ]; then cargo fmt --all; fi
+"""

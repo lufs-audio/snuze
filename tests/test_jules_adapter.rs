@@ -18,9 +18,7 @@ use std::time::Duration;
 static PORT: AtomicU16 = AtomicU16::new(3010);
 
 /// Minimal mock HTTP server bound to 127.0.0.1 on an ephemeral port.
-fn start_mock_server(
-    response_handler: fn(&str) -> (u16, String),
-) -> String {
+fn start_mock_server(response_handler: fn(&str) -> (u16, String)) -> String {
     let port = PORT.fetch_add(1, Ordering::SeqCst);
     let listener = TcpListener::bind(format!("127.0.0.1:{port}")).expect("bind");
     let url = format!("http://127.0.0.1:{port}");
@@ -193,9 +191,7 @@ fn test_real_jules_adapter_429_rate_limited() {
 
 #[test]
 fn test_real_jules_adapter_unrecognized_state_maps_to_unknown() {
-    let server = start_mock_server(|_path| {
-        (200, r#"{"state": "NEW_ALPHA_STATE"}"#.to_string())
-    });
+    let server = start_mock_server(|_path| (200, r#"{"state": "NEW_ALPHA_STATE"}"#.to_string()));
 
     let adapter = RealJulesAdapter::with_base_url_and_timeout(
         "mock-key".to_string(),
@@ -215,9 +211,7 @@ fn test_real_jules_adapter_unrecognized_state_maps_to_unknown() {
 
 #[test]
 fn test_real_jules_adapter_malformed_json_response() {
-    let server = start_mock_server(|_path| {
-        (200, "this is not json".to_string())
-    });
+    let server = start_mock_server(|_path| (200, "this is not json".to_string()));
 
     let adapter = RealJulesAdapter::with_base_url_and_timeout(
         "mock-key".to_string(),

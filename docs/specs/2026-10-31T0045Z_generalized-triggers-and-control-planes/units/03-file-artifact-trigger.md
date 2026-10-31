@@ -38,7 +38,7 @@ pub enum Trigger {
 }
 ```
 
-## Boundaries
+## Boundaries — do NOT touch
 - **Touches:**
   - `src/kernel/trigger.rs`
   - `src/scheduler/mod.rs`
@@ -48,6 +48,11 @@ pub enum Trigger {
 - **Does NOT touch:**
   - `src/store/`
   - `src/herdr/`
+
+## Output
+- Modified: `src/kernel/trigger.rs` (`Trigger::FileArtifact`), `src/scheduler/mod.rs` (path watcher + backoff), `src/daemon/mod.rs`, `src/cli/` (`--watch-file`).
+- Tests added under `tests/` for file-appearance firing, directory contracts, and timeout expiry.
+- Commit message: `feat(trigger): fire on file artifact via --watch-file`
 
 ## Verification
 ```bash

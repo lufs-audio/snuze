@@ -7,10 +7,7 @@ pub trait JulesAdapter: Send + Sync {
     ///
     /// # Errors
     /// Returns `SnuzeError::DaemonUnavailable` or `SnuzeError::JulesCredentialMissing` on failure.
-    fn check_sessions(
-        &self,
-        session_ids: &[String],
-    ) -> Result<Vec<JulesSessionState>, SnuzeError>;
+    fn check_sessions(&self, session_ids: &[String]) -> Result<Vec<JulesSessionState>, SnuzeError>;
 }
 
 /// Inner state shared (and cloned) across `MockJulesAdapter` instances.
@@ -92,10 +89,7 @@ impl Default for MockJulesAdapter {
 }
 
 impl JulesAdapter for MockJulesAdapter {
-    fn check_sessions(
-        &self,
-        session_ids: &[String],
-    ) -> Result<Vec<JulesSessionState>, SnuzeError> {
+    fn check_sessions(&self, session_ids: &[String]) -> Result<Vec<JulesSessionState>, SnuzeError> {
         {
             let mut guard = match self.inner.calls.lock() {
                 Ok(g) => g,

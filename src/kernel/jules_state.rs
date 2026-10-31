@@ -16,7 +16,6 @@ pub enum JulesState {
     Unknown(String),
 }
 
-
 impl JulesState {
     /// Returns the uppercase string representation of the state.
     #[must_use]

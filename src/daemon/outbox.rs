@@ -162,7 +162,11 @@ impl EventOutbox {
         let old_content = match std::fs::read_to_string(&self.path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(SnuzeError::PersistFailed(format!("failed to read outbox: {e}"))),
+            Err(e) => {
+                return Err(SnuzeError::PersistFailed(format!(
+                    "failed to read outbox: {e}"
+                )))
+            }
         };
 
         let temp_name = format!("events.ndjson.tmp.{}", uuid::Uuid::now_v7());

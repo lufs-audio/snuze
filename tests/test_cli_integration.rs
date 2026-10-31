@@ -155,7 +155,10 @@ fn test_cli_end_to_end_crud() -> Result<(), Box<dyn std::error::Error>> {
 
     let set_json: serde_json::Value =
         serde_json::from_str(&String::from_utf8_lossy(&set_out.stdout))?;
-    assert_eq!(set_json.get("status").and_then(|s| s.as_str()), Some("success"));
+    assert_eq!(
+        set_json.get("status").and_then(|s| s.as_str()),
+        Some("success")
+    );
     let alarm_id = set_json
         .get("data")
         .and_then(|d| d.get("id"))
@@ -174,7 +177,10 @@ fn test_cli_end_to_end_crud() -> Result<(), Box<dyn std::error::Error>> {
 
     let list_json: serde_json::Value =
         serde_json::from_str(&String::from_utf8_lossy(&list_out.stdout))?;
-    assert_eq!(list_json.get("status").and_then(|s| s.as_str()), Some("success"));
+    assert_eq!(
+        list_json.get("status").and_then(|s| s.as_str()),
+        Some("success")
+    );
     let list_data = list_json.get("data").and_then(|d| d.as_array()).unwrap();
     assert_eq!(list_data.len(), 1);
 
@@ -190,9 +196,15 @@ fn test_cli_end_to_end_crud() -> Result<(), Box<dyn std::error::Error>> {
 
     let status_json: serde_json::Value =
         serde_json::from_str(&String::from_utf8_lossy(&status_out.stdout))?;
-    assert_eq!(status_json.get("status").and_then(|s| s.as_str()), Some("success"));
     assert_eq!(
-        status_json.get("data").and_then(|d| d.get("id")).and_then(|s| s.as_str()),
+        status_json.get("status").and_then(|s| s.as_str()),
+        Some("success")
+    );
+    assert_eq!(
+        status_json
+            .get("data")
+            .and_then(|d| d.get("id"))
+            .and_then(|s| s.as_str()),
         Some(alarm_id.as_str())
     );
 

@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  test:
+    # fork-PR guard: never run untrusted fork code on the self-hosted fleet
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, lufs]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec  # stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        # pedantic stays advisory on purpose: it is a moving lint set, and a new
+        # clippy release must not be able to turn CI red on its own (it just did,
+        # via assert_is_empty). Correctness/suspicious/style lints remain fatal.
+        run: cargo clippy --all-targets --all-features -- -D warnings -A clippy::pedantic
+      - name: Build
+        run: cargo build --verbose
+      - name: Test
+        run: cargo test --verbose

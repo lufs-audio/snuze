@@ -10,9 +10,7 @@ use snuze::jules::MockJulesAdapter;
 use snuze::kernel::{
     Alarm, AlarmStatus, DeliveryMode, JulesCondition, JulesSessionState, JulesState, Trigger,
 };
-use snuze::scheduler::{
-    DeliveryOutcome, FakeClock, FiredEvent, HerdrAdapter, Scheduler,
-};
+use snuze::scheduler::{DeliveryOutcome, FakeClock, FiredEvent, HerdrAdapter, Scheduler};
 
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -154,7 +152,9 @@ fn test_jules_condition_progress_then_complete() {
     scheduler.arm(alarm);
 
     // Poll 1: at t=0 - InProgress, not satisfied
-    let ev1 = rx.recv_timeout(Duration::from_millis(500)).expect("expected Progress 1");
+    let ev1 = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Progress 1");
     match ev1 {
         FiredEvent::Progress {
             id,
@@ -172,7 +172,9 @@ fn test_jules_condition_progress_then_complete() {
 
     // Poll 2: advance 30s - still InProgress
     clock.advance(Duration::from_secs(30));
-    let ev2 = rx.recv_timeout(Duration::from_millis(500)).expect("expected Progress 2");
+    let ev2 = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Progress 2");
     match ev2 {
         FiredEvent::Progress {
             id,
@@ -197,7 +199,9 @@ fn test_jules_condition_progress_then_complete() {
 
     // Poll 3: advance 30s - now Completed, AnyCompleted satisfied
     clock.advance(Duration::from_secs(30));
-    let ev3 = rx.recv_timeout(Duration::from_millis(500)).expect("expected Fired event");
+    let ev3 = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Fired event");
     match ev3 {
         FiredEvent::Fired { id, at } => {
             assert_eq!(id, "alarm-jules-1");
@@ -260,7 +264,9 @@ fn test_jules_condition_any_terminal_fires_first() {
     );
     scheduler.arm(alarm);
 
-    let event = rx.recv_timeout(Duration::from_millis(500)).expect("expected Fired event");
+    let event = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Fired event");
     match event {
         FiredEvent::Fired { id, .. } => assert_eq!(id, "alarm-any-term"),
         other => panic!("expected Fired, got {other:?}"),
@@ -325,13 +331,17 @@ fn test_jules_condition_all_terminal_waits_for_all() {
     scheduler.arm(alarm);
 
     // Poll 1 at t=0
-    let _ = rx.recv_timeout(Duration::from_millis(500)).expect("expected Progress 1");
+    let _ = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Progress 1");
     assert_eq!(herdr.delivered_count(), 0);
 
     // Advance past several polls while session 2 remains InProgress
     for _ in 0..4 {
         clock.advance(Duration::from_secs(30));
-        let _ = rx.recv_timeout(Duration::from_millis(500)).expect("expected Progress");
+        let _ = rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("expected Progress");
         assert_eq!(herdr.delivered_count(), 0);
     }
     assert_eq!(jules.call_count(), 5);
@@ -352,7 +362,9 @@ fn test_jules_condition_all_terminal_waits_for_all() {
 
     // Next poll fires
     clock.advance(Duration::from_secs(30));
-    let fired_ev = rx.recv_timeout(Duration::from_millis(500)).expect("expected Fired event");
+    let fired_ev = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Fired event");
     match fired_ev {
         FiredEvent::Fired { id, .. } => assert_eq!(id, "alarm-all-term"),
         other => panic!("expected Fired, got {other:?}"),
@@ -405,15 +417,21 @@ fn test_jules_condition_timeout_fires_failed_timeout() {
     scheduler.arm(alarm);
 
     // Poll 1 at t=0
-    let _ = rx.recv_timeout(Duration::from_millis(500)).expect("expected Progress 1");
+    let _ = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Progress 1");
 
     // Poll 2 at t=30
     clock.advance(Duration::from_secs(30));
-    let _ = rx.recv_timeout(Duration::from_millis(500)).expect("expected Progress 2");
+    let _ = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Progress 2");
 
     // Poll 3 at t=60 (hits timeout_at)
     clock.advance(Duration::from_secs(30));
-    let ev = rx.recv_timeout(Duration::from_millis(500)).expect("expected Failed event");
+    let ev = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Failed event");
     match ev {
         FiredEvent::Failed { id, reason } => {
             assert_eq!(id, "alarm-timeout");
@@ -456,15 +474,18 @@ fn test_jules_condition_transient_error_recovers() {
     scheduler.arm(alarm);
 
     // Poll 1 at t=0 -> Progress
-    let _ = rx.recv_timeout(Duration::from_millis(500)).expect("expected Progress 1");
+    let _ = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Progress 1");
 
     // Simulate transient network outage on next poll
     jules.set_failure("temporary 503 backend error");
     clock.advance(Duration::from_secs(30));
 
     // Should emit Progress (not terminal failure) since timeout hasn't been reached
-    let ev_transient =
-        rx.recv_timeout(Duration::from_millis(500)).expect("expected Progress during blip");
+    let ev_transient = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Progress during blip");
     match ev_transient {
         FiredEvent::Progress { id, .. } => {
             assert_eq!(id, "alarm-transient");
@@ -480,7 +501,9 @@ fn test_jules_condition_transient_error_recovers() {
     }]);
 
     clock.advance(Duration::from_secs(30));
-    let fired_ev = rx.recv_timeout(Duration::from_millis(500)).expect("expected Fired event");
+    let fired_ev = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Fired event");
     match fired_ev {
         FiredEvent::Fired { id, .. } => assert_eq!(id, "alarm-transient"),
         other => panic!("expected Fired event, got {other:?}"),
@@ -495,12 +518,8 @@ fn test_arm_past_timeout_fires_failed_timeout_immediately() {
     let herdr = MockHerdrAdapter::new();
     let jules = MockJulesAdapter::new(vec![]);
 
-    let (scheduler, rx) = setup_scheduler(
-        clock,
-        herdr.clone(),
-        jules.clone(),
-        Duration::from_mins(10),
-    );
+    let (scheduler, rx) =
+        setup_scheduler(clock, herdr.clone(), jules.clone(), Duration::from_mins(10));
 
     // timeout_at is in the past relative to base_time
     let past_timeout = base_time - Duration::from_secs(10);
@@ -516,7 +535,9 @@ fn test_arm_past_timeout_fires_failed_timeout_immediately() {
     );
     scheduler.arm(alarm);
 
-    let ev = rx.recv_timeout(Duration::from_millis(500)).expect("expected Failed event");
+    let ev = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Failed event");
     match ev {
         FiredEvent::Failed { id, reason } => {
             assert_eq!(id, "alarm-already-timed-out");
@@ -535,12 +556,8 @@ fn test_deadline_prompt_without_tokens_interpolates_unchanged() {
     let herdr = MockHerdrAdapter::new();
     let jules = MockJulesAdapter::new(vec![]);
 
-    let (scheduler, rx) = setup_scheduler(
-        clock.clone(),
-        herdr.clone(),
-        jules,
-        Duration::from_mins(10),
-    );
+    let (scheduler, rx) =
+        setup_scheduler(clock.clone(), herdr.clone(), jules, Duration::from_mins(10));
 
     let alarm = Alarm {
         id: "plain-alarm".to_string(),
@@ -561,7 +578,9 @@ fn test_deadline_prompt_without_tokens_interpolates_unchanged() {
     scheduler.arm(alarm);
 
     clock.advance(Duration::from_secs(10));
-    let _ = rx.recv_timeout(Duration::from_millis(500)).expect("expected Fired");
+    let _ = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Fired");
 
     let delivered = herdr.last_delivered().expect("delivered alarm");
     match delivered.delivery {
@@ -582,12 +601,8 @@ fn test_deadline_prompt_duration_interpolation() {
     let herdr = MockHerdrAdapter::new();
     let jules = MockJulesAdapter::new(vec![]);
 
-    let (scheduler, rx) = setup_scheduler(
-        clock.clone(),
-        herdr.clone(),
-        jules,
-        Duration::from_mins(10),
-    );
+    let (scheduler, rx) =
+        setup_scheduler(clock.clone(), herdr.clone(), jules, Duration::from_mins(10));
 
     let alarm = Alarm {
         id: "duration-alarm".to_string(),
@@ -608,7 +623,9 @@ fn test_deadline_prompt_duration_interpolation() {
     scheduler.arm(alarm);
 
     clock.advance(Duration::from_secs(754));
-    let _ = rx.recv_timeout(Duration::from_millis(500)).expect("expected Fired");
+    let _ = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Fired");
 
     let delivered = herdr.last_delivered().expect("delivered alarm");
     match delivered.delivery {
@@ -648,7 +665,9 @@ fn test_jules_credential_missing_fails_immediately_without_waiting_for_timeout()
 
     clock.advance(Duration::from_secs(10));
 
-    let ev = rx.recv_timeout(Duration::from_millis(500)).expect("expected Failed event immediately");
+    let ev = rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("expected Failed event immediately");
     match ev {
         FiredEvent::Failed { id, reason } => {
             assert_eq!(id, "cred-missing-alarm");

@@ -35,8 +35,8 @@ impl RealJulesAdapter {
     /// # Errors
     /// Returns `SnuzeError::JulesCredentialMissing` if `JULES_API_KEY` is not set or empty.
     pub fn new() -> Result<Self, SnuzeError> {
-        let api_key = std::env::var("JULES_API_KEY")
-            .map_err(|_| SnuzeError::JulesCredentialMissing)?;
+        let api_key =
+            std::env::var("JULES_API_KEY").map_err(|_| SnuzeError::JulesCredentialMissing)?;
         if api_key.trim().is_empty() {
             return Err(SnuzeError::JulesCredentialMissing);
         }
@@ -65,10 +65,7 @@ impl RealJulesAdapter {
 }
 
 impl JulesAdapter for RealJulesAdapter {
-    fn check_sessions(
-        &self,
-        session_ids: &[String],
-    ) -> Result<Vec<JulesSessionState>, SnuzeError> {
+    fn check_sessions(&self, session_ids: &[String]) -> Result<Vec<JulesSessionState>, SnuzeError> {
         let mut results = Vec::with_capacity(session_ids.len());
         let agent = ureq::AgentBuilder::new()
             .timeout(self.request_timeout)
@@ -80,17 +77,16 @@ impl JulesAdapter for RealJulesAdapter {
                 self.base_url.trim_end_matches('/'),
                 session_id
             );
-            let resp_result = agent
-                .get(&url)
-                .set("x-goog-api-key", &self.api_key)
-                .call();
+            let resp_result = agent.get(&url).set("x-goog-api-key", &self.api_key).call();
 
             match resp_result {
                 Ok(resp) => {
-                    let body: JulesSessionResponse = resp
-                        .into_json()
-                        .map_err(|e| SnuzeError::DaemonUnavailable(format!("malformed Jules response: {e}")))?;
-                    let state = body.state.unwrap_or(JulesState::Unknown("MISSING".to_string()));
+                    let body: JulesSessionResponse = resp.into_json().map_err(|e| {
+                        SnuzeError::DaemonUnavailable(format!("malformed Jules response: {e}"))
+                    })?;
+                    let state = body
+                        .state
+                        .unwrap_or(JulesState::Unknown("MISSING".to_string()));
                     let pull_request_url = body.outputs.and_then(|outputs| {
                         outputs
                             .into_iter()

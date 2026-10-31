@@ -43,8 +43,9 @@ impl DaemonLock {
         }
 
         // Lock acquired; overwrite with current process PID
-        file.set_len(0)
-            .map_err(|e| SnuzeError::DaemonUnavailable(format!("could not truncate pid file: {e}")))?;
+        file.set_len(0).map_err(|e| {
+            SnuzeError::DaemonUnavailable(format!("could not truncate pid file: {e}"))
+        })?;
         write!(file, "{}", std::process::id())
             .map_err(|e| SnuzeError::DaemonUnavailable(format!("could not write pid file: {e}")))?;
         file.sync_all()

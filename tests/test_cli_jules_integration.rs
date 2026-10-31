@@ -104,7 +104,10 @@ fn test_cli_dry_run_jules_set_json() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_cli_dry_run_jules_session_not_found() -> Result<(), Box<dyn std::error::Error>> {
     let server_url = start_mock_jules_server(Arc::new(|_path| {
-        (404, r#"{"error": "Session nonexistent not found"}"#.to_string())
+        (
+            404,
+            r#"{"error": "Session nonexistent not found"}"#.to_string(),
+        )
     }));
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_snuze"));
@@ -136,12 +139,11 @@ fn test_cli_dry_run_jules_session_not_found() -> Result<(), Box<dyn std::error::
         json.get("code").and_then(serde_json::Value::as_i64),
         Some(3)
     );
-    assert!(
-        json.get("message")
-            .and_then(|m| m.as_str())
-            .unwrap_or_default()
-            .contains("Jules session not found: nonexistent")
-    );
+    assert!(json
+        .get("message")
+        .and_then(|m| m.as_str())
+        .unwrap_or_default()
+        .contains("Jules session not found: nonexistent"));
 
     Ok(())
 }
@@ -209,7 +211,10 @@ fn test_cli_jules_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
 
     let set_json: serde_json::Value =
         serde_json::from_str(&String::from_utf8_lossy(&set_out.stdout))?;
-    assert_eq!(set_json.get("status").and_then(|s| s.as_str()), Some("success"));
+    assert_eq!(
+        set_json.get("status").and_then(|s| s.as_str()),
+        Some("success")
+    );
     let alarm_id = set_json
         .get("data")
         .and_then(|d| d.get("id"))

@@ -134,7 +134,12 @@ fn test_herdr_event_listener_end_to_end_socket_delivery() {
             "agent_status": "done"
         }
     });
-    writeln!(stream, "{}", serde_json::to_string(&non_matching_event).unwrap()).unwrap();
+    writeln!(
+        stream,
+        "{}",
+        serde_json::to_string(&non_matching_event).unwrap()
+    )
+    .unwrap();
     stream.flush().unwrap();
 
     std::thread::sleep(Duration::from_millis(50));
@@ -148,7 +153,12 @@ fn test_herdr_event_listener_end_to_end_socket_delivery() {
             "agent_status": "done"
         }
     });
-    writeln!(stream, "{}", serde_json::to_string(&matching_event).unwrap()).unwrap();
+    writeln!(
+        stream,
+        "{}",
+        serde_json::to_string(&matching_event).unwrap()
+    )
+    .unwrap();
     stream.flush().unwrap();
 
     std::thread::sleep(Duration::from_millis(50));

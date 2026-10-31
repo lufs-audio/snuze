@@ -39,7 +39,7 @@ pub trait DeliveryAdapter: Send + Sync {
 }
 ```
 
-## Boundaries
+## Boundaries — do NOT touch
 - **Touches:**
   - `src/kernel/types.rs`
   - `src/scheduler/mod.rs`
@@ -50,6 +50,11 @@ pub trait DeliveryAdapter: Send + Sync {
 - **Does NOT touch:**
   - `src/store/` (on-disk store interface remains generic)
   - `src/daemon/` (uses scheduler trait abstraction)
+
+## Output
+- Modified: `src/kernel/types.rs` (`DeliveryTarget`), `src/scheduler/mod.rs` (`DeliveryAdapter` trait + target auto-detection), `src/herdr/adapter.rs` (implements the trait), `src/tmux/` (new `TmuxAdapter`), `src/cli/` (`--target`).
+- Tests added under `tests/` for target auto-detection (`$HERDR_ENV`, `$TMUX`) and `TmuxAdapter` command construction.
+- Commit message: `feat(delivery): pluggable DeliveryAdapter with tmux support`
 
 ## Verification
 ```bash

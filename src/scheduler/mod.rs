@@ -4,8 +4,8 @@ pub mod heap;
 use crate::jules::JulesAdapter;
 use crate::kernel::duration::format_duration;
 use crate::kernel::{
-    herdr_status_satisfied, Alarm, DeliveryMode, HerdrWatchStatus, JulesSessionState,
-    TemplateVars, Trigger,
+    herdr_status_satisfied, Alarm, DeliveryMode, HerdrWatchStatus, JulesSessionState, TemplateVars,
+    Trigger,
 };
 use crate::scheduler::heap::AlarmHeap;
 use std::collections::HashSet;

@@ -14,7 +14,9 @@ use snuze::jules::JulesAdapter;
 use snuze::kernel::{
     Alarm, AlarmStatus, DeliveryMode, HerdrWatchStatus, JulesSessionState, SnuzeError, Trigger,
 };
-use snuze::scheduler::{DeliveryOutcome, FakeClock, FiredEvent, HerdrAdapter, PushSignal, Scheduler};
+use snuze::scheduler::{
+    DeliveryOutcome, FakeClock, FiredEvent, HerdrAdapter, PushSignal, Scheduler,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -174,7 +176,10 @@ fn test_scheduler_signal_herdr_status_fires_on_match_and_updates_on_non_match() 
         pane_id: "w2:p2".to_string(),
         new_status: HerdrWatchStatus::Blocked,
     });
-    assert!(resolved.is_empty(), "non-matching status should not resolve");
+    assert!(
+        resolved.is_empty(),
+        "non-matching status should not resolve"
+    );
     assert_eq!(herdr.delivered_count(), 0);
     assert_eq!(events.lock().unwrap().len(), 0);
 
@@ -246,7 +251,10 @@ fn test_scheduler_signal_herdr_status_broadcast() {
     });
     resolved.sort();
 
-    assert_eq!(resolved, vec!["alarm-h1".to_string(), "alarm-h2".to_string()]);
+    assert_eq!(
+        resolved,
+        vec!["alarm-h1".to_string(), "alarm-h2".to_string()]
+    );
     assert_eq!(herdr.delivered_count(), 2);
     assert_eq!(events.lock().unwrap().len(), 2);
 }
@@ -438,7 +446,10 @@ fn test_scheduler_signal_external_broadcast() {
     });
     resolved.sort();
 
-    assert_eq!(resolved, vec!["alarm-b1".to_string(), "alarm-b2".to_string()]);
+    assert_eq!(
+        resolved,
+        vec!["alarm-b1".to_string(), "alarm-b2".to_string()]
+    );
     assert_eq!(herdr.delivered_count(), 2);
     assert_eq!(events.lock().unwrap().len(), 2);
 }

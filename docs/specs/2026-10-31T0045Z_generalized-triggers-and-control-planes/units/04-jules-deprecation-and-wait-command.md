@@ -35,7 +35,7 @@ pub enum Response {
 }
 ```
 
-## Boundaries
+## Boundaries — do NOT touch
 - **Touches:**
   - `Cargo.toml` (remove `ureq`)
   - `src/lib.rs` (remove `pub mod jules`)
@@ -47,6 +47,12 @@ pub enum Response {
 - **Does NOT touch:**
   - `src/herdr/`
   - `src/tmux/`
+
+## Output
+- Deleted: `src/jules/`; removed `pub mod jules` from `src/lib.rs`; dropped `ureq` from `Cargo.toml` (snuze returns to zero-network).
+- Deleted tests: `tests/test_jules_adapter.rs`, `tests/test_jules_mock.rs`, `tests/test_scheduler_jules.rs`, `tests/test_kernel_jules.rs`, `tests/test_cli_jules_integration.rs`.
+- Modified: `src/kernel/` (remove `Trigger::JulesCondition`), `src/cli/` (`snuze wait <id>`), `src/daemon/`; `SPEC.md` updated to record the removal.
+- Commit message: `feat!: remove Jules condition mode; add snuze wait`
 
 ## Verification
 ```bash

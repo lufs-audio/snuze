@@ -44,8 +44,9 @@ impl Daemon {
         }
 
         // Spawn detached daemon process
-        let exe = std::env::current_exe()
-            .map_err(|e| SnuzeError::DaemonUnavailable(format!("could not find current exe: {e}")))?;
+        let exe = std::env::current_exe().map_err(|e| {
+            SnuzeError::DaemonUnavailable(format!("could not find current exe: {e}"))
+        })?;
 
         let mut cmd = std::process::Command::new(exe);
         cmd.arg("daemon")

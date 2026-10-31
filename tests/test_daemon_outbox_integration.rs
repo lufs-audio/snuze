@@ -94,10 +94,19 @@ fn test_outbox_emission_fired_and_canceled_call_sites() -> Result<(), Box<dyn st
 
     // 3. Drain events and verify both events were recorded in the outbox
     let events = client.drain_events()?;
-    assert_eq!(events.len(), 2, "Expected 2 outbox events, got {}: {:?}", events.len(), events);
+    assert_eq!(
+        events.len(),
+        2,
+        "Expected 2 outbox events, got {}: {:?}",
+        events.len(),
+        events
+    );
 
     let fired_event = events.iter().find(|e| e.alarm_id == fired_alarm_id);
-    assert!(fired_event.is_some(), "Fired alarm event missing from outbox");
+    assert!(
+        fired_event.is_some(),
+        "Fired alarm event missing from outbox"
+    );
     let fired_event = fired_event.unwrap();
     assert_eq!(fired_event.status, "fired");
     assert_eq!(fired_event.trigger_kind, "deadline");
@@ -105,7 +114,10 @@ fn test_outbox_emission_fired_and_canceled_call_sites() -> Result<(), Box<dyn st
     assert_eq!(fired_event.delivery_target_pane, "w1:p1");
 
     let canceled_event = events.iter().find(|e| e.alarm_id == canceled_alarm_id);
-    assert!(canceled_event.is_some(), "Canceled alarm event missing from outbox");
+    assert!(
+        canceled_event.is_some(),
+        "Canceled alarm event missing from outbox"
+    );
     let canceled_event = canceled_event.unwrap();
     assert_eq!(canceled_event.status, "canceled");
     assert_eq!(canceled_event.trigger_kind, "deadline");

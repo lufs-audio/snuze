@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use snuze::jules::{JulesAdapter, MockJulesAdapter};
 use snuze::kernel::{JulesSessionState, JulesState, SnuzeError};

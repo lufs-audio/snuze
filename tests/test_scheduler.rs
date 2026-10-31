@@ -11,9 +11,7 @@ use std::time::{Duration, SystemTime};
 
 use snuze::jules::MockJulesAdapter;
 use snuze::kernel::{Alarm, AlarmStatus, DeliveryMode, Trigger};
-use snuze::scheduler::{
-    DeliveryOutcome, FakeClock, FiredEvent, HerdrAdapter, Scheduler,
-};
+use snuze::scheduler::{DeliveryOutcome, FakeClock, FiredEvent, HerdrAdapter, Scheduler};
 
 #[derive(Clone, Default)]
 struct MockHerdrAdapter {
@@ -105,7 +103,8 @@ fn test_scheduler_fire_success() {
     let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
     let clock = FakeClock::new(base_time);
     let adapter = MockHerdrAdapter::new();
-    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
+    let (scheduler, rx) =
+        setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
 
     let deadline = base_time + Duration::from_secs(30);
     scheduler.arm(create_test_alarm("alarm-1", deadline));
@@ -142,7 +141,8 @@ fn test_scheduler_cancel_pending() {
     let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
     let clock = FakeClock::new(base_time);
     let adapter = MockHerdrAdapter::new();
-    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
+    let (scheduler, rx) =
+        setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
 
     let deadline = base_time + Duration::from_secs(30);
     scheduler.arm(create_test_alarm("alarm-cancel", deadline));
@@ -152,12 +152,19 @@ fn test_scheduler_cancel_pending() {
     assert!(canceled, "cancel should return true for pending alarm");
 
     let cancel_missing = scheduler.cancel("non-existent");
-    assert!(!cancel_missing, "cancel should return false for unknown alarm");
+    assert!(
+        !cancel_missing,
+        "cancel should return false for unknown alarm"
+    );
 
     // Advance far past deadline
     clock.advance(Duration::from_secs(1000));
     assert!(rx.recv_timeout(Duration::from_millis(50)).is_err());
-    assert_eq!(adapter.delivered_count(), 0, "zero deliver calls after cancellation");
+    assert_eq!(
+        adapter.delivered_count(),
+        0,
+        "zero deliver calls after cancellation"
+    );
 }
 
 #[test]
@@ -165,7 +172,8 @@ fn test_scheduler_deadline_ordering() {
     let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
     let clock = FakeClock::new(base_time);
     let adapter = MockHerdrAdapter::new();
-    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
+    let (scheduler, rx) =
+        setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
 
     // Arm alarms out of order, 1ms apart
     let d1 = base_time + Duration::from_millis(100);
@@ -226,7 +234,11 @@ fn test_scheduler_missed_past_grace_window_at_arm_time() {
         _ => panic!("expected Missed event, got {event:?}"),
     }
 
-    assert_eq!(adapter.delivered_count(), 0, "no deliver call for missed alarm");
+    assert_eq!(
+        adapter.delivered_count(),
+        0,
+        "no deliver call for missed alarm"
+    );
 }
 
 #[test]
@@ -271,7 +283,10 @@ fn test_scheduler_delivery_failure_variants() {
             .expect("expected event");
 
         match event {
-            FiredEvent::Failed { id: event_id, reason } => {
+            FiredEvent::Failed {
+                id: event_id,
+                reason,
+            } => {
                 assert_eq!(event_id, id);
                 assert_eq!(reason, expected_reason);
             }
@@ -285,7 +300,8 @@ fn test_scheduler_cancel_next_due_alarm_rearms_next() {
     let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
     let clock = FakeClock::new(base_time);
     let adapter = MockHerdrAdapter::new();
-    let (scheduler, rx) = setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
+    let (scheduler, rx) =
+        setup_test_scheduler(clock.clone(), adapter.clone(), Duration::from_mins(10));
 
     let d_early = base_time + Duration::from_secs(10);
     let d_late = base_time + Duration::from_secs(30);
@@ -381,7 +397,10 @@ fn test_scheduler_cancel_in_flight_delivery_suppresses_fired_event() {
         sched_bg.run();
     });
 
-    scheduler.arm(create_test_alarm("inflight-alarm", base_time + Duration::from_secs(10)));
+    scheduler.arm(create_test_alarm(
+        "inflight-alarm",
+        base_time + Duration::from_secs(10),
+    ));
     clock.advance(Duration::from_secs(10));
 
     // Wait until deliver() is actively executing
@@ -489,4 +508,3 @@ fn test_scheduler_cancel_in_flight_jules_poll_suppresses_progress_and_rearm() {
         "canceled jules alarm must not fire later"
     );
 }
-

@@ -10,9 +10,7 @@ use crate::herdr::RealHerdrAdapter;
 use crate::jules::adapter::RealJulesAdapter;
 use crate::jules::JulesAdapter;
 use crate::kernel::duration::parse_duration;
-use crate::kernel::{
-    Alarm, AlarmStatus, DeliveryMode, JulesCondition, SnuzeError, Trigger,
-};
+use crate::kernel::{Alarm, AlarmStatus, DeliveryMode, JulesCondition, SnuzeError, Trigger};
 use crate::store::AlarmStore;
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -477,7 +475,9 @@ pub fn handle_daemon(args: &DaemonArgs, state_dir: &Path) -> CliResult {
         DaemonAction::Start { foreground } => {
             if foreground {
                 Daemon::run_foreground(state_dir)?;
-                Ok(serde_json::Value::String("Daemon exited cleanly".to_string()))
+                Ok(serde_json::Value::String(
+                    "Daemon exited cleanly".to_string(),
+                ))
             } else {
                 Daemon::ensure_running(state_dir)?;
                 Ok(serde_json::Value::String("Daemon started".to_string()))
@@ -547,10 +547,7 @@ pub fn handle_doctor(args: &DoctorArgs, state_dir: &Path) -> CliResult {
         Some(true)
     })()
     .unwrap_or(false);
-    check_results.insert(
-        "state_dir_writable",
-        serde_json::json!(state_dir_writable),
-    );
+    check_results.insert("state_dir_writable", serde_json::json!(state_dir_writable));
 
     let mut counts = HashMap::new();
     let mut corrupt_alarms = Vec::new();
@@ -623,7 +620,11 @@ pub fn handle_doctor(args: &DoctorArgs, state_dir: &Path) -> CliResult {
              Missed Alarms: {}\n\
              Corrupt Alarms: {}",
             herdr_binary,
-            if herdr_socket_reachable { "reachable" } else { "unreachable" },
+            if herdr_socket_reachable {
+                "reachable"
+            } else {
+                "unreachable"
+            },
             if daemon_running { "running" } else { "stopped" },
             if state_dir_writable { "yes" } else { "no" },
             pending_count,
@@ -660,7 +661,10 @@ pub fn handle_events(args: &EventsArgs, state_dir: &Path) -> CliResult {
                     let _ = writeln!(
                         output,
                         "- [{}] {} {} ({})",
-                        event.alarm_id, event.trigger_kind, event.status, event.delivery_target_pane
+                        event.alarm_id,
+                        event.trigger_kind,
+                        event.status,
+                        event.delivery_target_pane
                     );
                 }
                 Ok(serde_json::Value::String(output.trim_end().to_string()))

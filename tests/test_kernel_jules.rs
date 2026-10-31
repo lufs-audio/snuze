@@ -162,7 +162,8 @@ fn test_template_interpolation_unknown_and_none_vars() {
         pr_urls: None,
     };
 
-    let template = "Alert: {session_id} took {duration}, status={status}, unknown={foo} and pr={pr_urls}";
+    let template =
+        "Alert: {session_id} took {duration}, status={status}, unknown={foo} and pr={pr_urls}";
     let result = interpolate(template, &vars);
     assert_eq!(
         result,
@@ -179,7 +180,8 @@ fn test_template_interpolation_repeated_tokens() {
         pr_urls: None,
     };
 
-    let template = "{session_id} is {status}! Repeating: {session_id} status is {status} in {duration}.";
+    let template =
+        "{session_id} is {status}! Repeating: {session_id} status is {status} in {duration}.";
     let result = interpolate(template, &vars);
     assert_eq!(
         result,
@@ -277,7 +279,10 @@ fn test_jules_state_serde_and_unknown_fallback() {
         ("PAUSED", JulesState::Paused),
         ("Failed", JulesState::Failed),
         ("FAILED", JulesState::Failed),
-        ("SOME_FUTURE_STATE", JulesState::Unknown("SOME_FUTURE_STATE".to_string())),
+        (
+            "SOME_FUTURE_STATE",
+            JulesState::Unknown("SOME_FUTURE_STATE".to_string()),
+        ),
     ];
 
     for (raw_str, expected_state) in cases {

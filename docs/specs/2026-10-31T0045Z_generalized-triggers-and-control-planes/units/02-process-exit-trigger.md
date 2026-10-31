@@ -34,7 +34,7 @@ pub enum Trigger {
 // snuze set [--pid <PID>] [--timeout <DURATION>] ...
 ```
 
-## Boundaries
+## Boundaries — do NOT touch
 - **Touches:**
   - `src/kernel/trigger.rs`
   - `src/scheduler/mod.rs`
@@ -44,6 +44,11 @@ pub enum Trigger {
 - **Does NOT touch:**
   - `src/herdr/`
   - `src/store/`
+
+## Output
+- Modified: `src/kernel/trigger.rs` (`Trigger::ProcessExit`), `src/scheduler/mod.rs` (PID monitoring + backoff), `src/daemon/mod.rs`, `src/cli/` (`--pid`).
+- Tests added under `tests/` for PID-exit firing, timeout expiry, and the no-busy-loop backoff.
+- Commit message: `feat(trigger): fire on process exit via --pid`
 
 ## Verification
 ```bash
