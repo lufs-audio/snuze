@@ -2,7 +2,9 @@
 #![allow(clippy::indexing_slicing)]
 
 use snuze::daemon::{Daemon, DaemonClient};
-use snuze::kernel::{Alarm, AlarmStatus, DeliveryMode, JulesCondition, SnuzeError, Trigger};
+use snuze::kernel::{
+    Alarm, AlarmStatus, DeliveryMode, DeliveryTarget, FileWatchMode, SnuzeError, Trigger,
+};
 use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -18,7 +20,9 @@ fn create_test_alarm(id: &str, trigger: Trigger, deadline: SystemTime) -> Alarm 
     let now = SystemTime::now();
     Alarm {
         id: id.to_string(),
-        pane_id: "w1:p1".to_string(),
+        target: DeliveryTarget::Herdr {
+            pane_id: "w1:p1".to_string(),
+        },
         created_by_pane: Some("w1:p0".to_string()),
         delivery: DeliveryMode::Prompt {
             text: "Wake up agent".to_string(),
@@ -142,22 +146,21 @@ fn test_outbox_progress_tick_not_emitted() -> Result<(), Box<dyn std::error::Err
     let client = DaemonClient::connect(&state_dir)?;
     client.ping()?;
 
-    // Create a JulesCondition alarm with a poll interval and long timeout
-    let jules_alarm_id = format!("jules-{}", Uuid::now_v7());
-    let jules_alarm = create_test_alarm(
-        &jules_alarm_id,
-        Trigger::JulesCondition {
-            session_ids: vec!["nonexistent-session".to_string()],
-            condition: JulesCondition::AllTerminal,
-            poll_interval_secs: 1,
+    // A long-lived, never-satisfied condition alarm: it re-polls repeatedly, so
+    // this proves non-terminal poll ticks never reach the outbox.
+    let artifact_alarm_id = format!("artifact-{}", Uuid::now_v7());
+    let artifact_alarm = create_test_alarm(
+        &artifact_alarm_id,
+        Trigger::FileArtifact {
+            path: temp_dir.path().join("never-appears.json"),
+            mode: FileWatchMode::Exists,
             timeout_at: SystemTime::now() + Duration::from_mins(1),
-            last_known: vec![],
         },
         SystemTime::now() + Duration::from_secs(1),
     );
-    client.set_alarm(jules_alarm)?;
+    client.set_alarm(artifact_alarm)?;
 
-    // Give scheduler time to poll (mock adapter might fail or progress)
+    // Give the scheduler time to poll at least once
     thread::sleep(Duration::from_millis(500));
 
     // Drain events - pending / progress events must never be in outbox

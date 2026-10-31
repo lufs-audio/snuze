@@ -7,14 +7,16 @@ use std::fs;
 use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 
-use snuze::kernel::{Alarm, AlarmStatus, DeliveryMode, SnuzeError, Trigger};
+use snuze::kernel::{Alarm, AlarmStatus, DeliveryMode, DeliveryTarget, SnuzeError, Trigger};
 use snuze::store::{resolve_state_dir, AlarmStore};
 
 fn make_alarm(id: &str, deadline_offset_secs: u64, status: AlarmStatus) -> Alarm {
     let now = SystemTime::now();
     Alarm {
         id: id.to_string(),
-        pane_id: "w1:p1".to_string(),
+        target: DeliveryTarget::Herdr {
+            pane_id: "w1:p1".to_string(),
+        },
         created_by_pane: Some("w1:p0".to_string()),
         delivery: DeliveryMode::Prompt {
             text: format!("wake up {id}"),
@@ -59,7 +61,7 @@ fn test_put_then_get_round_trip() {
 
     let retrieved = store.get("roundtrip-1").unwrap();
     assert_eq!(retrieved.id, alarm.id);
-    assert_eq!(retrieved.pane_id, alarm.pane_id);
+    assert_eq!(retrieved.target, alarm.target);
     assert_eq!(retrieved.created_by_pane, alarm.created_by_pane);
     assert_eq!(retrieved.delivery, alarm.delivery);
     assert_eq!(retrieved.label, alarm.label);

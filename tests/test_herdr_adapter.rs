@@ -11,8 +11,8 @@
 #![allow(clippy::panic)]
 
 use snuze::snuze_herdr::RealHerdrAdapter;
-use snuze::snuze_kernel::{Alarm, AlarmStatus, DeliveryMode, SnuzeError, Trigger};
-use snuze::snuze_scheduler::{DeliveryOutcome, HerdrAdapter};
+use snuze::snuze_kernel::{Alarm, AlarmStatus, DeliveryMode, DeliveryTarget, SnuzeError, Trigger};
+use snuze::snuze_scheduler::{DeliveryAdapter, DeliveryOutcome};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -38,7 +38,9 @@ fn create_test_adapter(behavior: &str, timeout: Duration) -> RealHerdrAdapter {
 fn sample_alarm(delivery: DeliveryMode) -> Alarm {
     Alarm {
         id: "01J5K4E6F8ZZZZZZZZZZZZZZZZ".to_string(),
-        pane_id: "w1:p1".to_string(),
+        target: DeliveryTarget::Herdr {
+            pane_id: "w1:p1".to_string(),
+        },
         created_by_pane: Some("w1:p0".to_string()),
         delivery,
         label: Some("test-alarm".to_string()),
@@ -131,7 +133,7 @@ fn test_deliver_prompt_delivered() {
         text: "wake up agent".to_string(),
     });
 
-    let outcome = adapter.deliver(&alarm);
+    let outcome = adapter.deliver(&alarm.target, &alarm.delivery).unwrap();
     assert_eq!(outcome, DeliveryOutcome::Delivered);
 }
 
@@ -143,7 +145,7 @@ fn test_deliver_prompt_agent_blocked() {
         text: "wake up agent".to_string(),
     });
 
-    let outcome = adapter.deliver(&alarm);
+    let outcome = adapter.deliver(&alarm.target, &alarm.delivery).unwrap();
     match outcome {
         DeliveryOutcome::AgentBlocked(reason) => {
             assert!(reason.contains("busy"));
@@ -160,7 +162,7 @@ fn test_deliver_prompt_stalled() {
         text: "wake up agent".to_string(),
     });
 
-    let outcome = adapter.deliver(&alarm);
+    let outcome = adapter.deliver(&alarm.target, &alarm.delivery).unwrap();
     match outcome {
         DeliveryOutcome::PromptStalled(reason) => {
             assert!(reason.contains("no lifecycle change"));
@@ -177,7 +179,7 @@ fn test_deliver_prompt_pane_gone() {
         text: "wake up agent".to_string(),
     });
 
-    let outcome = adapter.deliver(&alarm);
+    let outcome = adapter.deliver(&alarm.target, &alarm.delivery).unwrap();
     match outcome {
         DeliveryOutcome::PaneGone(reason) => {
             assert!(reason.contains("not found"));
@@ -194,7 +196,7 @@ fn test_deliver_command_delivered() {
         text: "echo wake up".to_string(),
     });
 
-    let outcome = adapter.deliver(&alarm);
+    let outcome = adapter.deliver(&alarm.target, &alarm.delivery).unwrap();
     assert_eq!(outcome, DeliveryOutcome::Delivered);
 }
 
@@ -206,7 +208,7 @@ fn test_deliver_command_pane_gone() {
         text: "echo wake up".to_string(),
     });
 
-    let outcome = adapter.deliver(&alarm);
+    let outcome = adapter.deliver(&alarm.target, &alarm.delivery).unwrap();
     match outcome {
         DeliveryOutcome::PaneGone(reason) => {
             assert!(reason.contains("not found"));
@@ -224,11 +226,11 @@ fn test_deliver_command_never_produces_agent_blocked_or_stalled() {
     });
 
     // Command mode must never return AgentBlocked or PromptStalled
-    let outcome = adapter.deliver(&alarm);
+    let outcome = adapter.deliver(&alarm.target, &alarm.delivery).unwrap();
     assert!(matches!(outcome, DeliveryOutcome::HerdrUnavailable(_)));
 
     env::set_var("FAKE_HERDR_BEHAVIOR", "agent_prompt_stalled");
-    let outcome2 = adapter.deliver(&alarm);
+    let outcome2 = adapter.deliver(&alarm.target, &alarm.delivery).unwrap();
     assert!(matches!(outcome2, DeliveryOutcome::HerdrUnavailable(_)));
 }
 
@@ -240,7 +242,7 @@ fn test_deliver_syntax_error() {
         text: "hello".to_string(),
     });
 
-    let outcome = adapter.deliver(&alarm);
+    let outcome = adapter.deliver(&alarm.target, &alarm.delivery).unwrap();
     match outcome {
         DeliveryOutcome::HerdrUnavailable(reason) => {
             assert!(reason.contains("snuze invoked herdr incorrectly"));
@@ -258,7 +260,7 @@ fn test_deliver_timeout() {
         text: "hello".to_string(),
     });
 
-    let outcome = adapter.deliver(&alarm);
+    let outcome = adapter.deliver(&alarm.target, &alarm.delivery).unwrap();
     assert_eq!(
         outcome,
         DeliveryOutcome::HerdrUnavailable("timeout".to_string())
@@ -273,7 +275,7 @@ fn test_deliver_truncation() {
         text: "hello".to_string(),
     });
 
-    let outcome = adapter.deliver(&alarm);
+    let outcome = adapter.deliver(&alarm.target, &alarm.delivery).unwrap();
     match outcome {
         DeliveryOutcome::HerdrUnavailable(reason) => {
             assert!(reason.ends_with("..."));

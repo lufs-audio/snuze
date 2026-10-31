@@ -39,7 +39,15 @@ fn test_cli_dry_run_signal_set_json() -> Result<(), Box<dyn std::error::Error>> 
     assert_eq!(json.get("status").and_then(|s| s.as_str()), Some("success"));
     assert_eq!(
         json.get("data")
-            .and_then(|d| d.get("pane_id"))
+            .and_then(|d| d.get("target"))
+            .and_then(|t| t.get("type"))
+            .and_then(|s| s.as_str()),
+        Some("herdr")
+    );
+    assert_eq!(
+        json.get("data")
+            .and_then(|d| d.get("target"))
+            .and_then(|t| t.get("pane_id"))
             .and_then(|s| s.as_str()),
         Some("w1:p3")
     );

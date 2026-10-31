@@ -1,5 +1,5 @@
 use snuze::kernel::{
-    parse_duration, Alarm, AlarmStatus, DeliveryMode, ExitCode, SnuzeError, Trigger,
+    parse_duration, Alarm, AlarmStatus, DeliveryMode, DeliveryTarget, ExitCode, SnuzeError, Trigger,
 };
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -149,7 +149,9 @@ fn test_alarm_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
 
     let alarm = Alarm {
         id: "01J5X9M8X2S9C5M94K60M8X2S9".to_string(),
-        pane_id: "w1:p3".to_string(),
+        target: DeliveryTarget::Herdr {
+            pane_id: "w1:p3".to_string(),
+        },
         created_by_pane: Some("w1:p1".to_string()),
         delivery: DeliveryMode::Prompt {
             text: "Review build output".to_string(),
@@ -171,8 +173,22 @@ fn test_alarm_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         Some("01J5X9M8X2S9C5M94K60M8X2S9")
     );
     assert_eq!(
-        parsed.get("pane_id").and_then(serde_json::Value::as_str),
+        parsed
+            .get("target")
+            .and_then(|t| t.get("type"))
+            .and_then(serde_json::Value::as_str),
+        Some("herdr")
+    );
+    assert_eq!(
+        parsed
+            .get("target")
+            .and_then(|t| t.get("pane_id"))
+            .and_then(serde_json::Value::as_str),
         Some("w1:p3")
+    );
+    assert!(
+        parsed.get("pane_id").is_none(),
+        "legacy pane_id must not be emitted"
     );
     assert_eq!(
         parsed
@@ -209,7 +225,9 @@ fn test_alarm_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     // Minimal alarm without optional fields
     let minimal_alarm = Alarm {
         id: "01J5X9M8X2S9C5M94K60M8X200".to_string(),
-        pane_id: "w1:p2".to_string(),
+        target: DeliveryTarget::Herdr {
+            pane_id: "w1:p2".to_string(),
+        },
         created_by_pane: None,
         delivery: DeliveryMode::Command {
             text: "cargo test".to_string(),
@@ -229,4 +247,137 @@ fn test_alarm_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(minimal_alarm, deserialized_minimal);
 
     Ok(())
+}
+
+/// Alarm files written before `DeliveryTarget` existed carried a bare
+/// `pane_id` string. They must still load, upgraded to the Herdr variant.
+#[test]
+fn test_alarm_legacy_pane_id_deserializes_to_herdr_target() -> Result<(), Box<dyn std::error::Error>>
+{
+    let created_at = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let current = Alarm {
+        id: "01J5X9M8X2S9C5M94K60M8X2S9".to_string(),
+        target: DeliveryTarget::Herdr {
+            pane_id: "w1:p9".to_string(),
+        },
+        created_by_pane: Some("w1:p0".to_string()),
+        delivery: DeliveryMode::Prompt {
+            text: "legacy wake-up".to_string(),
+        },
+        label: None,
+        created_at,
+        deadline: created_at + Duration::from_hours(1),
+        status: AlarmStatus::Pending,
+        fired_at: None,
+        failure_reason: None,
+        trigger: Trigger::Deadline,
+        schema_version: 1,
+    };
+
+    // Rewrite the current shape into the legacy shape: `target` -> bare `pane_id`.
+    let mut value = serde_json::to_value(&current)?;
+    let object = value
+        .as_object_mut()
+        .ok_or("alarm must serialize to an object")?;
+    let pane_id = object
+        .remove("target")
+        .and_then(|t| {
+            t.get("pane_id")
+                .and_then(serde_json::Value::as_str)
+                .map(String::from)
+        })
+        .ok_or("target.pane_id missing")?;
+    object.insert("pane_id".to_string(), serde_json::Value::String(pane_id));
+
+    let legacy_json = serde_json::to_string(&value)?;
+    assert!(legacy_json.contains("\"pane_id\":\"w1:p9\""));
+    assert!(!legacy_json.contains("\"target\""));
+
+    let migrated: Alarm = serde_json::from_str(&legacy_json)?;
+    assert_eq!(
+        migrated, current,
+        "legacy record must upgrade to Herdr target"
+    );
+
+    // Round-tripping the migrated alarm emits the new shape and drops the
+    // top-level legacy `pane_id` key (it now lives inside `target`).
+    let reserialized: serde_json::Value = serde_json::to_value(&migrated)?;
+    assert!(reserialized.get("pane_id").is_none());
+    assert_eq!(
+        reserialized
+            .get("target")
+            .and_then(|t| t.get("type"))
+            .and_then(serde_json::Value::as_str),
+        Some("herdr")
+    );
+    assert_eq!(
+        reserialized
+            .get("target")
+            .and_then(|t| t.get("pane_id"))
+            .and_then(serde_json::Value::as_str),
+        Some("w1:p9")
+    );
+
+    Ok(())
+}
+
+/// An alarm with neither `target` nor `pane_id` is genuinely unreadable and must
+/// be rejected rather than silently defaulted to some arbitrary destination.
+#[test]
+fn test_alarm_without_any_target_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+    let created_at = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let complete = Alarm {
+        id: "01J5X9M8X2S9C5M94K60M8X2S9".to_string(),
+        target: DeliveryTarget::Wait,
+        created_by_pane: None,
+        delivery: DeliveryMode::Prompt {
+            text: "no destination".to_string(),
+        },
+        label: None,
+        created_at,
+        deadline: created_at + Duration::from_hours(1),
+        status: AlarmStatus::Pending,
+        fired_at: None,
+        failure_reason: None,
+        trigger: Trigger::Deadline,
+        schema_version: 1,
+    };
+
+    let mut value = serde_json::to_value(&complete)?;
+    value
+        .as_object_mut()
+        .ok_or("alarm must serialize to an object")?
+        .remove("target");
+
+    let result: Result<Alarm, _> = serde_json::from_value(value);
+    assert!(result.is_err());
+
+    Ok(())
+}
+
+#[test]
+fn test_delivery_target_spec_rendering() {
+    assert_eq!(
+        DeliveryTarget::Herdr {
+            pane_id: "w1:p3".to_string()
+        }
+        .spec(),
+        "herdr:w1:p3"
+    );
+    assert_eq!(
+        DeliveryTarget::Tmux {
+            target: "%0".to_string()
+        }
+        .spec(),
+        "tmux:%0"
+    );
+    assert_eq!(
+        DeliveryTarget::Command {
+            command: "echo hi".to_string()
+        }
+        .spec(),
+        "command:echo hi"
+    );
+    assert_eq!(DeliveryTarget::Wait.spec(), "wait");
+    assert_eq!(DeliveryTarget::Wait.destination(), "wait");
 }

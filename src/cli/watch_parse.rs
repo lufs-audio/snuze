@@ -1,4 +1,18 @@
-use crate::kernel::{HerdrWatchStatus, SnuzeError};
+use crate::kernel::{FileWatchMode, HerdrWatchStatus, SnuzeError};
+
+/// Parses `--watch-mode`'s value.
+///
+/// # Errors
+/// Returns `SnuzeError::ConflictingFlags` for anything other than `exists` or `modified`.
+pub fn parse_file_watch_mode(raw: &str) -> Result<FileWatchMode, SnuzeError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "exists" => Ok(FileWatchMode::Exists),
+        "modified" => Ok(FileWatchMode::Modified),
+        other => Err(SnuzeError::ConflictingFlags(format!(
+            "unrecognized --watch-mode '{other}'; valid options are: exists, modified"
+        ))),
+    }
+}
 
 /// Parses `--watch-for`'s comma-separated value.
 ///

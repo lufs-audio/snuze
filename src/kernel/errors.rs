@@ -9,16 +9,23 @@ pub enum SnuzeError {
     PaneNotFound(String),
     #[error("watched Herdr pane not found: {0}")]
     WatchedPaneNotFound(String),
-    #[error("Jules session not found: {0}")]
-    JulesSessionNotFound(String),
     #[error("alarm not found: {0}")]
     AlarmNotFound(String),
+    #[error("process {0} is not running")]
+    ProcessNotFound(u32),
+    #[error("alarm {id} did not fire: {reason}")]
+    AlarmNotFired {
+        /// Alarm identifier that was being awaited.
+        id: String,
+        /// Why it did not reach `Fired` (terminal status, or wait timeout).
+        reason: String,
+    },
     #[error("could not persist alarm: {0}")]
     PersistFailed(String),
     #[error("herdr binary not found on PATH")]
     HerdrBinaryMissing,
-    #[error("JULES_API_KEY not set in environment")]
-    JulesCredentialMissing,
+    #[error("required binary not found on PATH: {0}")]
+    BinaryMissing(String),
     #[error("snuze daemon unavailable: {0}")]
     DaemonUnavailable(String),
 }
@@ -49,12 +56,14 @@ impl From<&SnuzeError> for ExitCode {
             SnuzeError::InvalidDuration(_) | SnuzeError::ConflictingFlags(_) => ExitCode::Usage,
             SnuzeError::PaneNotFound(_)
             | SnuzeError::WatchedPaneNotFound(_)
-            | SnuzeError::JulesSessionNotFound(_)
+            | SnuzeError::ProcessNotFound(_)
             | SnuzeError::AlarmNotFound(_) => ExitCode::TargetUnavailable,
-            SnuzeError::HerdrBinaryMissing | SnuzeError::JulesCredentialMissing => {
+            SnuzeError::HerdrBinaryMissing | SnuzeError::BinaryMissing(_) => {
                 ExitCode::BinaryMissing
             }
-            SnuzeError::PersistFailed(_) => ExitCode::ContractViolated,
+            SnuzeError::PersistFailed(_) | SnuzeError::AlarmNotFired { .. } => {
+                ExitCode::ContractViolated
+            }
             SnuzeError::DaemonUnavailable(_) => ExitCode::DaemonUnavailable,
         }
     }

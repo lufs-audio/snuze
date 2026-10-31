@@ -6,11 +6,10 @@
 #![allow(clippy::needless_raw_string_hashes)]
 
 use snuze::herdr::HerdrEventListener;
-use snuze::jules::JulesAdapter;
 use snuze::kernel::{
-    Alarm, AlarmStatus, DeliveryMode, HerdrWatchStatus, JulesSessionState, SnuzeError, Trigger,
+    Alarm, AlarmStatus, DeliveryMode, DeliveryTarget, HerdrWatchStatus, SnuzeError, Trigger,
 };
-use snuze::scheduler::{DeliveryOutcome, FakeClock, FiredEvent, HerdrAdapter, Scheduler};
+use snuze::scheduler::{DeliveryAdapter, DeliveryOutcome, FakeClock, FiredEvent, Scheduler};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::sync::{Arc, Mutex};
@@ -19,25 +18,20 @@ use tempfile::TempDir;
 
 #[derive(Clone, Default)]
 struct MockHerdrAdapter {
-    delivered_alarms: Arc<Mutex<Vec<Alarm>>>,
+    deliveries: Arc<Mutex<Vec<(DeliveryTarget, DeliveryMode)>>>,
 }
 
-impl HerdrAdapter for MockHerdrAdapter {
-    fn deliver(&self, alarm: &Alarm) -> DeliveryOutcome {
-        self.delivered_alarms.lock().unwrap().push(alarm.clone());
-        DeliveryOutcome::Delivered
-    }
-}
-
-#[derive(Clone, Default)]
-struct MockJulesAdapter;
-
-impl JulesAdapter for MockJulesAdapter {
-    fn check_sessions(
+impl DeliveryAdapter for MockHerdrAdapter {
+    fn deliver(
         &self,
-        _session_ids: &[String],
-    ) -> Result<Vec<JulesSessionState>, SnuzeError> {
-        Ok(vec![])
+        target: &DeliveryTarget,
+        delivery: &DeliveryMode,
+    ) -> Result<DeliveryOutcome, SnuzeError> {
+        self.deliveries
+            .lock()
+            .unwrap()
+            .push((target.clone(), delivery.clone()));
+        Ok(DeliveryOutcome::Delivered)
     }
 }
 
@@ -50,7 +44,9 @@ fn create_herdr_alarm(
 ) -> Alarm {
     Alarm {
         id: id.to_string(),
-        pane_id: target_pane.to_string(),
+        target: DeliveryTarget::Herdr {
+            pane_id: target_pane.to_string(),
+        },
         created_by_pane: Some("w1:p0".to_string()),
         delivery: DeliveryMode::Prompt {
             text: "Agent finished!".to_string(),
@@ -81,13 +77,12 @@ fn test_herdr_event_listener_end_to_end_socket_delivery() {
     let base_time = UNIX_EPOCH + Duration::from_secs(10_000);
     let clock = FakeClock::new(base_time);
     let herdr_adapter = MockHerdrAdapter::default();
-    let delivered = Arc::clone(&herdr_adapter.delivered_alarms);
+    let delivered = Arc::clone(&herdr_adapter.deliveries);
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_clone = Arc::clone(&events);
 
     let scheduler = Arc::new(Scheduler::new(
         Box::new(herdr_adapter),
-        Box::new(MockJulesAdapter),
         Box::new(clock),
         Duration::from_mins(10),
         Box::new(move |ev| {
@@ -164,8 +159,12 @@ fn test_herdr_event_listener_end_to_end_socket_delivery() {
     std::thread::sleep(Duration::from_millis(50));
 
     let del = delivered.lock().unwrap();
-    assert_eq!(del.len(), 1);
-    assert_eq!(del[0].id, "alarm-listen-1");
+    assert_eq!(del.len(), 1, "exactly one delivery for alarm-listen-1");
+    assert!(
+        matches!(&del[0].1, DeliveryMode::Prompt { text } if text == "Agent finished!"),
+        "unexpected delivery payload: {:?}",
+        del[0].1
+    );
 
     let evs = events.lock().unwrap();
     assert_eq!(evs.len(), 1);
@@ -187,13 +186,12 @@ fn test_herdr_event_listener_reconnection_resilience() {
     let base_time = UNIX_EPOCH + Duration::from_secs(20_000);
     let clock = FakeClock::new(base_time);
     let herdr_adapter = MockHerdrAdapter::default();
-    let delivered = Arc::clone(&herdr_adapter.delivered_alarms);
+    let delivered = Arc::clone(&herdr_adapter.deliveries);
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_clone = Arc::clone(&events);
 
     let scheduler = Arc::new(Scheduler::new(
         Box::new(herdr_adapter),
-        Box::new(MockJulesAdapter),
         Box::new(clock),
         Duration::from_mins(10),
         Box::new(move |ev| {
@@ -251,15 +249,13 @@ fn test_herdr_event_listener_reconnection_resilience() {
     std::thread::sleep(Duration::from_millis(50));
 
     let del = delivered.lock().unwrap();
-    assert_eq!(del.len(), 1);
-    assert_eq!(del[0].id, "alarm-reconnect");
+    assert_eq!(del.len(), 1, "exactly one delivery for alarm-reconnect");
 }
 
 #[test]
 fn test_herdr_event_listener_unrecognized_status_ignored() {
     let scheduler = Arc::new(Scheduler::new(
         Box::new(MockHerdrAdapter::default()),
-        Box::new(MockJulesAdapter),
         Box::new(FakeClock::new(UNIX_EPOCH)),
         Duration::from_mins(10),
         Box::new(|_| {}),

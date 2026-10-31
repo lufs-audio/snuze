@@ -1,18 +1,194 @@
+pub mod adapter;
 pub mod clock;
 pub mod heap;
 
-use crate::jules::JulesAdapter;
 use crate::kernel::duration::format_duration;
 use crate::kernel::{
-    herdr_status_satisfied, Alarm, DeliveryMode, HerdrWatchStatus, JulesSessionState, TemplateVars,
-    Trigger,
+    herdr_status_satisfied, Alarm, DeliveryMode, FileWatchMode, HerdrWatchStatus, SnuzeError,
+    TemplateVars, Trigger,
 };
 use crate::scheduler::heap::AlarmHeap;
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
+pub use adapter::{
+    detect_default_target, select_default_target, CommandAdapter, DeliveryAdapter, DeliveryOutcome,
+    TargetDispatcher,
+};
 pub use clock::{Clock, FakeClock, SystemClock};
+
+/// First poll interval for process/file condition triggers.
+const CONDITION_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+
+/// Ceiling for the exponential poll backoff of condition triggers.
+const CONDITION_MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+/// Age after which the condition poll interval doubles.
+const CONDITION_BACKOFF_STEP: Duration = Duration::from_secs(30);
+
+/// True when a watched artifact currently satisfies `mode`.
+///
+/// `path` may be exact or contain `*`/`?` wildcards in its final component, in
+/// which case any matching entry in the parent directory counts.
+#[must_use]
+pub fn file_artifact_satisfied(path: &Path, mode: FileWatchMode, since: SystemTime) -> bool {
+    match mode {
+        FileWatchMode::Exists => !matching_artifacts(path).is_empty(),
+        FileWatchMode::Modified => matching_artifacts(path)
+            .iter()
+            .any(|candidate| modified_since(candidate, since)),
+    }
+}
+
+/// Expands a possibly-globbed path into the set of existing matches.
+///
+/// A path with no wildcard in its final component is itself the only candidate,
+/// so this reduces to an existence check.
+fn matching_artifacts(path: &Path) -> Vec<PathBuf> {
+    let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+        // No final component to glob (e.g. a root or `..`); the path is its own artifact.
+        return if path.exists() {
+            vec![path.to_path_buf()]
+        } else {
+            Vec::new()
+        };
+    };
+
+    if !file_name.contains(['*', '?']) {
+        return if path.exists() {
+            vec![path.to_path_buf()]
+        } else {
+            Vec::new()
+        };
+    }
+
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+
+    let Ok(entries) = std::fs::read_dir(&parent) else {
+        return Vec::new();
+    };
+
+    let mut matches = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if glob_match(file_name, name) {
+            matches.push(entry.path());
+        }
+    }
+    matches.sort();
+    matches
+}
+
+/// True when `path` exists and was modified at or after `since`.
+fn modified_since(path: &Path, since: SystemTime) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    modified >= since
+}
+
+/// Minimal shell-style glob matcher supporting `*` (any run, including empty)
+/// and `?` (exactly one character).
+///
+/// Deliberately dependency-free: only the final path component is ever matched,
+/// so character classes, `**`, and brace expansion are out of scope.
+#[must_use]
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+
+    let (mut pi, mut ti) = (0_usize, 0_usize);
+    let mut star: Option<usize> = None;
+    let mut resume_from = 0_usize;
+
+    while let Some(&current) = text.get(ti) {
+        match pattern.get(pi) {
+            Some('*') => {
+                star = Some(pi);
+                resume_from = ti;
+                pi += 1;
+            }
+            Some(&pc) if pc == '?' || pc == current => {
+                pi += 1;
+                ti += 1;
+            }
+            _ => match star {
+                Some(s) => {
+                    pi = s + 1;
+                    resume_from += 1;
+                    ti = resume_from;
+                }
+                None => return false,
+            },
+        }
+    }
+
+    while pattern.get(pi) == Some(&'*') {
+        pi += 1;
+    }
+    pi == pattern.len()
+}
+
+/// Non-blocking liveness probe for a process id.
+///
+/// Uses `kill(pid, 0)`, which performs permission and existence checks without
+/// sending a signal. `EPERM` means the process exists but belongs to another
+/// user, so it still counts as running.
+///
+/// Returns `false` for pid `0` (which would address the caller's own process
+/// group) and for pids that cannot be represented as a `pid_t`.
+///
+/// Note: a zombie child that has exited but not yet been reaped still reports as
+/// running, exactly as `kill(pid, 0)` does. Callers that own the child should reap
+/// it (`wait`) to make the exit observable.
+#[must_use]
+pub fn is_process_running(pid: u32) -> bool {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        let ret = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        if ret == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// Exponential poll backoff derived deterministically from how long a condition
+/// alarm has been pending.
+///
+/// Stateless on purpose: `Trigger::ProcessExit`/`Trigger::FileArtifact` carry no
+/// backoff field, so the interval is a pure function of the alarm's age. It
+/// doubles every [`CONDITION_BACKOFF_STEP`] and saturates at
+/// [`CONDITION_MAX_BACKOFF`], which keeps polling cheap without a busy loop.
+#[must_use]
+fn condition_poll_backoff(elapsed: Duration) -> Duration {
+    let steps = (elapsed.as_secs() / CONDITION_BACKOFF_STEP.as_secs()).min(5);
+    let shift = u32::try_from(steps).unwrap_or(0);
+    std::cmp::min(
+        CONDITION_INITIAL_BACKOFF.saturating_mul(1u32 << shift),
+        CONDITION_MAX_BACKOFF,
+    )
+}
 
 /// Push signal delivered to the scheduler to resolve matching pending alarms.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,27 +202,10 @@ pub enum PushSignal {
     },
 }
 
-/// Outcome of attempting to deliver an alarm to a Herdr pane.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeliveryOutcome {
-    /// Alarm delivered successfully to target pane.
-    Delivered,
-    /// Target agent was blocked on another interactive input or state (`--prompt` only).
-    AgentBlocked(String),
-    /// Target agent prompt did not trigger an observed lifecycle change within the window (`--prompt` only).
-    PromptStalled(String),
-    /// Target pane or agent no longer resolves or does not exist.
-    PaneGone(String),
-    /// Herdr daemon was unavailable, command timed out, or invocation was malformed.
-    HerdrUnavailable(String),
-}
-
-/// Interface contract for dispatching alarm payloads to Herdr.
-pub trait HerdrAdapter: Send + Sync {
-    /// Deliver an alarm payload to the target Herdr pane.
-    fn deliver(&self, alarm: &Alarm) -> DeliveryOutcome;
-}
-
+/// Interface contract for dispatching alarm payloads to their delivery target.
+///
+/// Re-exported from [`adapter`] so callers can name it as `snuze::scheduler::DeliveryAdapter`.
+///
 /// Events emitted by the scheduler when an alarm transitions or updates progress.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FiredEvent {
@@ -69,12 +228,11 @@ pub enum FiredEvent {
         /// Alarm identifier.
         id: String,
     },
-    /// Non-terminal update to a pending condition alarm's known state.
+    /// Non-terminal update to a pending condition alarm: the alarm was re-armed
+    /// for a later check, which the daemon must persist across restarts.
     Progress {
         /// Alarm identifier.
         id: String,
-        /// Observed session states from recent poll.
-        last_known: Vec<JulesSessionState>,
         /// Next scheduled poll time.
         next_check_at: SystemTime,
     },
@@ -90,19 +248,42 @@ struct SchedulerState {
 /// In-memory scheduling engine that triggers alarm delivery at deadlines.
 pub struct Scheduler {
     state: Mutex<SchedulerState>,
-    adapter: Box<dyn HerdrAdapter>,
-    jules_adapter: Box<dyn JulesAdapter>,
+    adapter: Box<dyn DeliveryAdapter>,
     clock: Box<dyn Clock>,
     grace_window: Duration,
     on_event: Box<dyn Fn(FiredEvent) + Send + Sync>,
+}
+
+/// Maps an adapter result onto the scheduler's fired/failed event shape.
+fn delivery_event(
+    id: &str,
+    now: SystemTime,
+    result: Result<DeliveryOutcome, SnuzeError>,
+) -> FiredEvent {
+    match result {
+        Ok(DeliveryOutcome::Delivered) => FiredEvent::Fired {
+            id: id.to_string(),
+            at: now,
+        },
+        Ok(other) => FiredEvent::Failed {
+            id: id.to_string(),
+            reason: other
+                .failure_reason()
+                .unwrap_or("delivery failed")
+                .to_string(),
+        },
+        Err(e) => FiredEvent::Failed {
+            id: id.to_string(),
+            reason: e.to_string(),
+        },
+    }
 }
 
 impl Scheduler {
     /// Creates a new `Scheduler`.
     #[must_use]
     pub fn new(
-        adapter: Box<dyn HerdrAdapter>,
-        jules_adapter: Box<dyn JulesAdapter>,
+        adapter: Box<dyn DeliveryAdapter>,
         clock: Box<dyn Clock>,
         grace_window: Duration,
         on_event: Box<dyn Fn(FiredEvent) + Send + Sync>,
@@ -110,14 +291,16 @@ impl Scheduler {
         Self {
             state: Mutex::new(SchedulerState::default()),
             adapter,
-            jules_adapter,
             clock,
             grace_window,
             on_event,
         }
     }
 
-    /// Arms an alarm. For `Deadline`, checks the grace window; for `JulesCondition` and `HerdrStatus`, checks `timeout_at`.
+    /// Arms an alarm.
+    ///
+    /// `Deadline` alarms are checked against the grace window; every condition
+    /// trigger is checked against its own `timeout_at` ceiling.
     pub fn arm(&self, mut alarm: Alarm) {
         let now = self.clock.now();
         match &alarm.trigger {
@@ -127,15 +310,6 @@ impl Scheduler {
                         (self.on_event)(FiredEvent::Missed { id: alarm.id });
                         return;
                     }
-                }
-            }
-            Trigger::JulesCondition { timeout_at, .. } => {
-                if now >= *timeout_at {
-                    (self.on_event)(FiredEvent::Failed {
-                        id: alarm.id,
-                        reason: "timeout".to_string(),
-                    });
-                    return;
                 }
             }
             Trigger::HerdrStatus { timeout_at, .. }
@@ -148,6 +322,28 @@ impl Scheduler {
                     return;
                 }
                 alarm.deadline = *timeout_at;
+            }
+            Trigger::ProcessExit { timeout_at, .. } => {
+                if now >= *timeout_at {
+                    (self.on_event)(FiredEvent::Failed {
+                        id: alarm.id,
+                        reason: "timeout".to_string(),
+                    });
+                    return;
+                }
+                // Check the monitored process immediately, then re-poll with backoff.
+                alarm.deadline = now;
+            }
+            Trigger::FileArtifact { timeout_at, .. } => {
+                if now >= *timeout_at {
+                    (self.on_event)(FiredEvent::Failed {
+                        id: alarm.id,
+                        reason: "timeout".to_string(),
+                    });
+                    return;
+                }
+                // Evaluate the artifact immediately, then re-poll with backoff.
+                alarm.deadline = now;
             }
         }
 
@@ -226,7 +422,7 @@ impl Scheduler {
         }
 
         for alarm in to_deliver {
-            self.deliver_signal_alarm(alarm, now);
+            self.deliver_condition_alarm(alarm, now);
         }
 
         resolved_ids
@@ -298,7 +494,8 @@ impl Scheduler {
                 let now = self.clock.now();
                 match &alarm.trigger {
                     Trigger::Deadline => self.process_deadline_alarm(alarm, now),
-                    Trigger::JulesCondition { .. } => self.process_jules_alarm(alarm, now),
+                    Trigger::ProcessExit { .. } => self.process_process_exit_alarm(alarm, now),
+                    Trigger::FileArtifact { .. } => self.process_file_artifact_alarm(alarm, now),
                     Trigger::HerdrStatus { .. } | Trigger::ExternalSignal { .. } => {
                         if self.is_canceled(&alarm.id) {
                             self.finish_in_flight(&alarm.id);
@@ -322,8 +519,9 @@ impl Scheduler {
         }
     }
 
-    /// Delivers an early push-signaled alarm (same delivery & event shape as normal pop firing).
-    fn deliver_signal_alarm(&self, alarm: Alarm, now: SystemTime) {
+    /// Delivers a condition alarm that has just been satisfied (same delivery and
+    /// event shape as a normally-popped alarm).
+    fn deliver_condition_alarm(&self, alarm: Alarm, now: SystemTime) {
         if self.is_canceled(&alarm.id) {
             self.finish_in_flight(&alarm.id);
             return;
@@ -344,29 +542,19 @@ impl Scheduler {
             }
         }
 
-        let outcome = self.adapter.deliver(&delivered_alarm);
+        let result = self
+            .adapter
+            .deliver(&delivered_alarm.target, &delivered_alarm.delivery);
         if self.finish_in_flight(&alarm.id) {
             return;
         }
 
-        let event = match outcome {
-            DeliveryOutcome::Delivered => FiredEvent::Fired {
-                id: alarm.id,
-                at: now,
-            },
-            DeliveryOutcome::AgentBlocked(reason)
-            | DeliveryOutcome::PromptStalled(reason)
-            | DeliveryOutcome::PaneGone(reason)
-            | DeliveryOutcome::HerdrUnavailable(reason) => FiredEvent::Failed {
-                id: alarm.id,
-                reason,
-            },
-        };
+        let event = delivery_event(&alarm.id, now, result);
         (self.on_event)(event);
     }
 
     /// Processes a `Trigger::Deadline` alarm: checks grace window, interpolates
-    /// template tokens, delivers via Herdr adapter.
+    /// template tokens, delivers via the configured adapter.
     fn process_deadline_alarm(&self, alarm: Alarm, now: SystemTime) {
         if self.is_canceled(&alarm.id) {
             self.finish_in_flight(&alarm.id);
@@ -397,185 +585,119 @@ impl Scheduler {
             }
         }
 
-        let outcome = self.adapter.deliver(&delivered_alarm);
+        let result = self
+            .adapter
+            .deliver(&delivered_alarm.target, &delivered_alarm.delivery);
 
         if self.finish_in_flight(&alarm.id) {
             return;
         }
 
-        let event = match outcome {
-            DeliveryOutcome::Delivered => FiredEvent::Fired {
-                id: alarm.id,
-                at: now,
-            },
-            DeliveryOutcome::AgentBlocked(reason)
-            | DeliveryOutcome::PromptStalled(reason)
-            | DeliveryOutcome::PaneGone(reason)
-            | DeliveryOutcome::HerdrUnavailable(reason) => FiredEvent::Failed {
-                id: alarm.id,
-                reason,
-            },
-        };
+        let event = delivery_event(&alarm.id, now, result);
         (self.on_event)(event);
     }
 
-    /// Processes a `Trigger::JulesCondition` alarm: polls Jules sessions,
-    /// evaluates the condition, fires on satisfaction, emits `Progress` for
-    /// intermediate polls, or `Failed("timeout")` when the timeout ceiling is reached.
-    fn process_jules_alarm(&self, alarm: Alarm, now: SystemTime) {
+    /// Processes a `Trigger::ProcessExit` alarm: re-checks the monitored PID and
+    /// either delivers (process gone), fails (timeout ceiling reached), or re-arms
+    /// with the capped poll backoff.
+    fn process_process_exit_alarm(&self, alarm: Alarm, now: SystemTime) {
         if self.is_canceled(&alarm.id) {
             self.finish_in_flight(&alarm.id);
             return;
         }
 
-        let (session_ids, condition, poll_interval_secs, timeout_at) =
-            if let Trigger::JulesCondition {
-                session_ids,
-                condition,
-                poll_interval_secs,
-                timeout_at,
-                ..
-            } = &alarm.trigger
-            {
-                (
-                    session_ids.clone(),
-                    *condition,
-                    *poll_interval_secs,
-                    *timeout_at,
-                )
-            } else {
-                self.finish_in_flight(&alarm.id);
-                return;
+        let Trigger::ProcessExit { pid, timeout_at } = alarm.trigger else {
+            self.finish_in_flight(&alarm.id);
+            return;
+        };
+
+        if !is_process_running(pid) {
+            self.deliver_condition_alarm(alarm, now);
+            return;
+        }
+
+        if self.finish_in_flight(&alarm.id) {
+            return;
+        }
+
+        if now >= timeout_at {
+            (self.on_event)(FiredEvent::Failed {
+                id: alarm.id,
+                reason: "timeout".to_string(),
+            });
+            return;
+        }
+
+        self.rearm_condition(&alarm, now, timeout_at);
+    }
+
+    /// Processes a `Trigger::FileArtifact` alarm: re-evaluates the watched path
+    /// and either delivers (condition satisfied), fails (timeout ceiling reached),
+    /// or re-arms with the capped poll backoff.
+    fn process_file_artifact_alarm(&self, alarm: Alarm, now: SystemTime) {
+        if self.is_canceled(&alarm.id) {
+            self.finish_in_flight(&alarm.id);
+            return;
+        }
+
+        let Trigger::FileArtifact {
+            path,
+            mode,
+            timeout_at,
+        } = &alarm.trigger
+        else {
+            self.finish_in_flight(&alarm.id);
+            return;
+        };
+
+        if file_artifact_satisfied(path, *mode, alarm.created_at) {
+            self.deliver_condition_alarm(alarm, now);
+            return;
+        }
+
+        let timeout_at = *timeout_at;
+
+        if self.finish_in_flight(&alarm.id) {
+            return;
+        }
+
+        if now >= timeout_at {
+            (self.on_event)(FiredEvent::Failed {
+                id: alarm.id,
+                reason: "timeout".to_string(),
+            });
+            return;
+        }
+
+        self.rearm_condition(&alarm, now, timeout_at);
+    }
+
+    /// Re-pushes a condition alarm with an exponentially backed-off next-check
+    /// time, and emits `Progress` so the daemon can persist it across restarts.
+    ///
+    /// The alarm is re-armed *before* `Progress` is emitted, so a `cancel` racing
+    /// with the notification always finds the alarm on the heap.
+    fn rearm_condition(&self, alarm: &Alarm, now: SystemTime, timeout_at: SystemTime) {
+        let elapsed = now.duration_since(alarm.created_at).unwrap_or_default();
+        let next_check_at = std::cmp::min(now + condition_poll_backoff(elapsed), timeout_at);
+
+        let mut rearmed = alarm.clone();
+        rearmed.deadline = next_check_at;
+
+        {
+            let mut state = match self.state.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
             };
-
-        let check_result = self.jules_adapter.check_sessions(&session_ids);
-
-        if self.is_canceled(&alarm.id) {
-            self.finish_in_flight(&alarm.id);
-            return;
+            if state.canceled.contains(&alarm.id) {
+                return;
+            }
+            state.heap.push(rearmed);
         }
 
-        match check_result {
-            Err(crate::kernel::SnuzeError::JulesCredentialMissing) => {
-                if self.finish_in_flight(&alarm.id) {
-                    return;
-                }
-                (self.on_event)(FiredEvent::Failed {
-                    id: alarm.id,
-                    reason: crate::kernel::SnuzeError::JulesCredentialMissing.to_string(),
-                });
-            }
-            Err(_) => {
-                if self.finish_in_flight(&alarm.id) {
-                    return;
-                }
-                if now >= timeout_at {
-                    (self.on_event)(FiredEvent::Failed {
-                        id: alarm.id,
-                        reason: "timeout".to_string(),
-                    });
-                } else {
-                    self.rearm_progress(&alarm, now, timeout_at, poll_interval_secs, Vec::new());
-                }
-            }
-            Ok(states) => {
-                if condition.is_satisfied(&states) {
-                    self.deliver_jules_alarm(alarm, now, &states);
-                } else {
-                    if self.finish_in_flight(&alarm.id) {
-                        return;
-                    }
-                    if now >= timeout_at {
-                        (self.on_event)(FiredEvent::Failed {
-                            id: alarm.id,
-                            reason: "timeout".to_string(),
-                        });
-                    } else {
-                        self.rearm_progress(&alarm, now, timeout_at, poll_interval_secs, states);
-                    }
-                }
-            }
-        }
-    }
-
-    fn deliver_jules_alarm(&self, alarm: Alarm, now: SystemTime, states: &[JulesSessionState]) {
-        let dur = now.duration_since(alarm.created_at).unwrap_or_default();
-        let dur_str = format_duration(dur);
-
-        let (session_id_str, status_str, pr_urls_str) =
-            crate::kernel::format_jules_template_vars(states);
-        let pr_urls_val = if pr_urls_str.is_empty() {
-            None
-        } else {
-            Some(pr_urls_str)
-        };
-
-        let vars = TemplateVars {
-            duration: Some(dur_str),
-            session_id: Some(session_id_str),
-            status: Some(status_str),
-            pr_urls: pr_urls_val,
-        };
-
-        let mut delivered_alarm = alarm.clone();
-        match &mut delivered_alarm.delivery {
-            DeliveryMode::Prompt { text } | DeliveryMode::Command { text } => {
-                *text = crate::kernel::interpolate(text, &vars);
-            }
-        }
-
-        let outcome = self.adapter.deliver(&delivered_alarm);
-        if self.finish_in_flight(&alarm.id) {
-            return;
-        }
-        let event = match outcome {
-            DeliveryOutcome::Delivered => FiredEvent::Fired {
-                id: alarm.id,
-                at: now,
-            },
-            DeliveryOutcome::AgentBlocked(reason)
-            | DeliveryOutcome::PromptStalled(reason)
-            | DeliveryOutcome::PaneGone(reason)
-            | DeliveryOutcome::HerdrUnavailable(reason) => FiredEvent::Failed {
-                id: alarm.id,
-                reason,
-            },
-        };
-        (self.on_event)(event);
-    }
-
-    /// Emits a `Progress` event and re-pushes the alarm onto the heap with an updated
-    /// `deadline` (next-check-time) and `last_known` session states.
-    fn rearm_progress(
-        &self,
-        alarm: &Alarm,
-        now: SystemTime,
-        timeout_at: SystemTime,
-        poll_interval_secs: u64,
-        last_known: Vec<JulesSessionState>,
-    ) {
-        let next_check_at =
-            std::cmp::min(now + Duration::from_secs(poll_interval_secs), timeout_at);
         (self.on_event)(FiredEvent::Progress {
             id: alarm.id.clone(),
-            last_known: last_known.clone(),
             next_check_at,
         });
-        let mut mut_alarm = alarm.clone();
-        mut_alarm.deadline = next_check_at;
-        if let Trigger::JulesCondition {
-            last_known: ref mut lk,
-            ..
-        } = &mut mut_alarm.trigger
-        {
-            *lk = last_known;
-        }
-        let mut state = match self.state.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
-        if !state.canceled.contains(&alarm.id) {
-            state.heap.push(mut_alarm);
-        }
     }
 }

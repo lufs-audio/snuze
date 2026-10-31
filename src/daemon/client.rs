@@ -141,6 +141,21 @@ impl DaemonClient {
         }
     }
 
+    /// Blocks on the daemon until the alarm reaches a terminal state.
+    ///
+    /// # Errors
+    /// Returns `SnuzeError::DaemonUnavailable` on IPC error.
+    pub fn wait_alarm(
+        &self,
+        alarm_id: &str,
+        timeout_secs: Option<u64>,
+    ) -> Result<Response, SnuzeError> {
+        self.send_request(&Request::WaitAlarm {
+            alarm_id: alarm_id.to_string(),
+            timeout_secs,
+        })
+    }
+
     /// Health check ping to verify daemon responsiveness.
     ///
     /// # Errors
